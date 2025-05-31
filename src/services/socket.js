@@ -6,6 +6,8 @@ import {
   handleSendMessage,
   handleDeleteMessage,
   handleEditMessage,
+  handleLeaveRoom,
+  handleDeleteRoom,
 } from "../controller/message.controller.js";
 import { getDB } from "./db.js";
 import { ObjectId } from "mongodb";
@@ -46,7 +48,7 @@ export const initializeSocket = (server, allowedOrigins) => {
         return next(new Error("Invalid token"));
       }
 
-      const allowedRoles = ["Employee", "CEO", "Manager" , "HR" , "Client" ,"TeamLeader"];
+      const allowedRoles = ["Employee", "CEO", "Manager", "HR", "Client", "TeamLeader"];
       if (!allowedRoles.includes(decoded.position)) {
         console.error("Insufficient position permissions");
         return next(
@@ -87,6 +89,7 @@ export const initializeSocket = (server, allowedOrigins) => {
             roomId: room.roomId,
             roomName: room.roomName,
             users: room.users,
+            creator: room.creator,
           });
           console.log(
             `📤 [Room Emitted on Connect] roomId=${room.roomId}, userId=${socket.user.userId}`
@@ -334,6 +337,7 @@ export const initializeSocket = (server, allowedOrigins) => {
             roomId,
             roomName,
             users: allUserIds,
+            creator: socket.user.userId,
           });
           console.log(
             `📤 [roomCreated Emitted] to userId=${userId}, roomId=${roomId}`
@@ -437,9 +441,37 @@ export const initializeSocket = (server, allowedOrigins) => {
       }
     });
 
-    socket.on("leaveRoom", (roomId) => {
+    socket.on("leaveRoom", async (roomId) => {
       console.log(
         `📥 [Leave Room Request] From ${socket.user.userId}: roomId=${roomId}`
+      );
+      try {
+        // Call the handleLeaveRoom controller
+        await handleLeaveRoom(socket, roomId);
+
+        // Update in-memory rooms Map after successful database update
+        const room = await roomCollection.findOne({ roomId });
+        if (room) {
+          rooms.set(roomId, {
+            roomName: room.roomName,
+            users: room.users,
+            creator: room.creator,
+          });
+        } else {
+          rooms.delete(roomId); // Remove from in-memory if room was deleted
+        }
+      } catch (error) {
+        console.error("❌ [Leave Room Error]:", error.message);
+        socket.emit(
+          "errorMessage",
+          "An unexpected error occurred while leaving room."
+        );
+      }
+    });
+
+    socket.on("deleteRoom", async (roomId) => {
+      console.log(
+        `📥 [Delete Room Request] From ${socket.user.userId}: roomId=${roomId}`
       );
       try {
         const room = rooms.get(roomId);
@@ -447,30 +479,27 @@ export const initializeSocket = (server, allowedOrigins) => {
           console.error(`Room not found: ${roomId}`);
           return socket.emit("errorMessage", "Room not found.");
         }
-        if (!room.users.includes(socket.user.userId)) {
+        if (room.creator !== socket.user.userId) {
           console.error(
-            `User ${socket.user.userId} not authorized to leave room ${roomId}`
+            `User ${socket.user.userId} not authorized to delete room ${roomId}`
           );
           return socket.emit(
             "errorMessage",
-            "You are not authorized to leave this room."
+            "Only the room creator can delete this room."
           );
         }
-        socket.leave(roomId);
-        console.log(
-          `✅ [User Left Room] userId=${socket.user.userId}, roomId=${roomId}`
-        );
-        socket.to(roomId).emit("userLeft", {
-          userId: socket.user.userId,
-          username: socket.user.firstName || "Anonymous",
-          roomId,
-        });
-        socket.emit("leaveConfirmation", { roomId });
+
+        // Call the handleDeleteRoom controller
+        await handleDeleteRoom(socket, roomId);
+
+        // Remove room from in-memory rooms Map
+        rooms.delete(roomId);
+        console.log(`🗑️ [In-Memory Room Removed] roomId=${roomId}`);
       } catch (error) {
-        console.error("❌ [Leave Room Error]:", error.message);
+        console.error("❌ [Delete Room Error]:", error.message);
         socket.emit(
           "errorMessage",
-          "An unexpected error occurred while leaving room."
+          "An unexpected error occurred while deleting room."
         );
       }
     });

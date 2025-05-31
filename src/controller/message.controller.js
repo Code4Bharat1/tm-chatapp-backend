@@ -435,3 +435,198 @@ export const getMessagesByRoom = async (req, res) => {
       .json({ message: "Server error while fetching messages" });
   }
 };
+
+
+export const handleLeaveRoom = async (socket, roomId) => {
+  const db = getDB();
+  const roomCollection = db.collection("rooms");
+
+  try {
+    const user = socket.user;
+
+    // Validate user
+    if (!user || !user.userId) {
+      console.warn("⚠️ [Validation Failed] User not authenticated");
+      return socket.emit("errorMessage", "Authentication required");
+    }
+
+    // Validate roomId
+    if (!roomId || typeof roomId !== "string" || roomId.trim() === "") {
+      console.warn("⚠️ [Validation Failed] Invalid or missing roomId");
+      return socket.emit(
+        "errorMessage",
+        "Room ID is required and must be a non-empty string"
+      );
+    }
+
+    // Check if the room exists and matches companyId
+    const room = await roomCollection.findOne({ roomId });
+    if (!room) {
+      console.warn(`⚠️ [Validation Failed] Room not found: ${roomId}`);
+      return socket.emit("errorMessage", "Room not found");
+    }
+
+    if (room.companyId !== user.companyId) {
+      console.warn(
+        `⚠️ [Validation Failed] User ${user.userId} not authorized for company ${room.companyId}`
+      );
+      return socket.emit(
+        "errorMessage",
+        "You are not authorized to access this room"
+      );
+    }
+
+    // Check if the user is in the room
+    if (!room.users.includes(user.userId)) {
+      console.warn(
+        `⚠️ [Validation Failed] User ${user.userId} not in room ${roomId}`
+      );
+      return socket.emit("errorMessage", "You are not a member of this room");
+    }
+
+    // Prevent creator from leaving (optional)
+    if (room.creator === user.userId) {
+      console.warn(
+        `⚠️ [Validation Failed] Creator ${user.userId} cannot leave room ${roomId}`
+      );
+      return socket.emit(
+        "errorMessage",
+        "Room creator cannot leave the room"
+      );
+    }
+
+    // Remove user from room's user list
+    const result = await roomCollection.updateOne(
+      { roomId },
+      { $pull: { users: user.userId } }
+    );
+
+    if (result.modifiedCount === 0) {
+      console.warn(
+        `⚠️ [Update Failed] User ${user.userId} not removed from room ${roomId}`
+      );
+      return socket.emit("errorMessage", "Failed to leave room");
+    }
+
+    // Check if room is empty and delete if necessary (optional)
+    const updatedRoom = await roomCollection.findOne({ roomId });
+    if (updatedRoom.users.length === 0) {
+      await roomCollection.deleteOne({ roomId });
+      console.log(`🗑️ [Room Deleted] Empty room: ${roomId}`);
+    }
+
+    // Leave the socket room
+    socket.leave(roomId);
+
+    console.log(`🚪 [User Left Room] User: ${user.userId}, Room: ${roomId}`);
+
+    // Notify the user and others in the room
+    socket.emit("roomLeft", {
+      success: true,
+      message: "Successfully left the room",
+      data: { roomId, userId: user.userId },
+    });
+
+    socket.to(roomId).emit("userLeftRoom", {
+      userId: user.userId,
+      username: user.firstName || "Anonymous",
+      roomId,
+      roomName: room.roomName,
+    });
+
+  } catch (error) {
+    console.error("❌ [handleLeaveRoom Error]:", error.message);
+    socket.emit("errorMessage", "Server error while leaving room");
+  }
+};
+
+
+export const handleDeleteRoom = async (socket, roomId) => {
+  const db = getDB();
+  const roomCollection = db.collection("rooms");
+  const messageCollection = db.collection("messages");
+
+  try {
+    const user = socket.user;
+
+    // Validate user
+    if (!user || !user.userId) {
+      console.warn("⚠️ [Validation Failed] User not authenticated");
+      return socket.emit("errorMessage", "Authentication required");
+    }
+
+    // Validate roomId
+    if (!roomId || typeof roomId !== "string" || roomId.trim() === "") {
+      console.warn("⚠️ [Validation Failed] Invalid or missing roomId");
+      return socket.emit(
+        "errorMessage",
+        "Room ID is required and must be a non-empty string"
+      );
+    }
+
+    // Check if the room exists and matches companyId
+    const room = await roomCollection.findOne({ roomId });
+    if (!room) {
+      console.warn(`⚠️ [Validation Failed] Room not found: ${roomId}`);
+      return socket.emit("errorMessage", "Room not found");
+    }
+
+    if (room.companyId !== user.companyId) {
+      console.warn(
+        `⚠️ [Validation Failed] User ${user.userId} not authorized for company ${room.companyId}`
+      );
+      return socket.emit(
+        "errorMessage",
+        "You are not authorized to access this room"
+      );
+    }
+
+    // Check if the user is the room's creator
+    if (room.creator !== user.userId) {
+      console.warn(
+        `⚠️ [Validation Failed] User ${user.userId} is not the creator of room ${roomId}`
+      );
+      return socket.emit(
+        "errorMessage",
+        "Only the room creator can delete this room"
+      );
+    }
+
+    // Delete the room from the rooms collection
+    const result = await roomCollection.deleteOne({ roomId });
+    if (result.deletedCount === 0) {
+      console.warn(`⚠️ [Delete Failed] Room not deleted: ${roomId}`);
+      return socket.emit("errorMessage", "Failed to delete room");
+    }
+
+    // Optionally delete all messages associated with the room
+    await messageCollection.deleteMany({ roomId });
+    console.log(`🗑️ [Messages Deleted] All messages for room: ${roomId}`);
+
+    // Notify all users in the room (including the creator)
+    console.log(`🗑️ [Room Deleted] Room: ${roomId} by User: ${user.userId}`);
+    socket.to(roomId).emit("roomDeleted", {
+      roomId,
+      roomName: room.roomName,
+      message: "The room has been deleted by the creator",
+    });
+    socket.emit("roomDeleted", {
+      roomId,
+      roomName: room.roomName,
+      message: "You have successfully deleted the room",
+    });
+
+    // Remove all users from the socket room
+    socket.to(roomId).emit("userLeftRoom", {
+      userId: user.userId,
+      username: user.firstName || "Anonymous",
+      roomId,
+      roomName: room.roomName,
+    });
+    socket.leave(roomId);
+
+  } catch (error) {
+    console.error("❌ [handleDeleteRoom Error]:", error.message);
+    socket.emit("errorMessage", "Server error while deleting room");
+  }
+};

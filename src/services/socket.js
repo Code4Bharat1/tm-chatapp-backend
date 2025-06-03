@@ -48,7 +48,14 @@ export const initializeSocket = (server, allowedOrigins) => {
         return next(new Error("Invalid token"));
       }
 
-      const allowedRoles = ["Employee", "CEO", "Manager", "HR", "Client", "TeamLeader"];
+      const allowedRoles = [
+        "Employee",
+        "CEO",
+        "Manager",
+        "HR",
+        "Client",
+        "TeamLeader",
+      ];
       if (!allowedRoles.includes(decoded.position)) {
         console.error("Insufficient position permissions");
         return next(
@@ -469,39 +476,8 @@ export const initializeSocket = (server, allowedOrigins) => {
       }
     });
 
-    socket.on("deleteRoom", async (roomId) => {
-      console.log(
-        `📥 [Delete Room Request] From ${socket.user.userId}: roomId=${roomId}`
-      );
-      try {
-        const room = rooms.get(roomId);
-        if (!room) {
-          console.error(`Room not found: ${roomId}`);
-          return socket.emit("errorMessage", "Room not found.");
-        }
-        if (room.creator !== socket.user.userId) {
-          console.error(
-            `User ${socket.user.userId} not authorized to delete room ${roomId}`
-          );
-          return socket.emit(
-            "errorMessage",
-            "Only the room creator can delete this room."
-          );
-        }
-
-        // Call the handleDeleteRoom controller
-        await handleDeleteRoom(socket, roomId);
-
-        // Remove room from in-memory rooms Map
-        rooms.delete(roomId);
-        console.log(`🗑️ [In-Memory Room Removed] roomId=${roomId}`);
-      } catch (error) {
-        console.error("❌ [Delete Room Error]:", error.message);
-        socket.emit(
-          "errorMessage",
-          "An unexpected error occurred while deleting room."
-        );
-      }
+    socket.on("deleteRoom", (data) => {
+      handleDeleteRoom(socket, data); // Pass socket and event data
     });
 
     socket.on("disconnect", () => {

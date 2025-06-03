@@ -2,6 +2,8 @@ import { getDB } from "../services/db.js";
 import { ObjectId } from "mongodb";
 import cookie from "cookie";
 import jwt from "jsonwebtoken";
+import { deleteS3FilesByRoom } from "./filleController.js";
+import { deleteS3VoicesByRoom } from "./voiceController.js";
 
 export const handleSendMessage = async (socket, message, targetRoom) => {
   const db = getDB();
@@ -541,92 +543,134 @@ export const handleLeaveRoom = async (socket, roomId) => {
 };
 
 
-export const handleDeleteRoom = async (socket, roomId) => {
-  const db = getDB();
-  const roomCollection = db.collection("rooms");
-  const messageCollection = db.collection("messages");
-
+export const handleDeleteRoom = async (req, res) => {
   try {
-    const user = socket.user;
+    console.log("📥 [Delete Room Request] Headers:", req.headers);
+    console.log("📥 [Delete Room Request] Params:", req.params);
 
-    // Validate user
-    if (!user || !user.userId) {
-      console.warn("⚠️ [Validation Failed] User not authenticated");
-      return socket.emit("errorMessage", "Authentication required");
+    // Authenticate user
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader) {
+      console.log("❌ No cookies sent");
+      return res.status(401).json({ error: "No cookies sent" });
     }
 
-    // Validate roomId
-    if (!roomId || typeof roomId !== "string" || roomId.trim() === "") {
-      console.warn("⚠️ [Validation Failed] Invalid or missing roomId");
-      return socket.emit(
-        "errorMessage",
-        "Room ID is required and must be a non-empty string"
-      );
+    const cookies = cookie.parse(cookieHeader);
+    const token = cookies.token;
+    if (!token) {
+      console.log("❌ Token missing");
+      return res.status(401).json({ error: "Token missing" });
     }
 
-    // Check if the room exists and matches companyId
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (!decoded) {
+      console.log("❌ Invalid token");
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    // Restrict to higher privilege roles
+    const allowedRoles = ["CEO", "Manager", "HR"];
+    if (!allowedRoles.includes(decoded.position)) {
+      console.log("❌ Insufficient permissions:", decoded.position);
+      return res.status(403).json({ error: "Insufficient position permissions" });
+    }
+
+    // Get roomId from URL parameter
+    const { roomId } = req.params;
+    if (!roomId) {
+      console.log("❌ No roomId provided");
+      return res.status(400).json({ error: "roomId is required" });
+    }
+
+    const db = getDB();
+    const roomCollection = db.collection("rooms");
+
+    // Verify room exists and user is authorized
     const room = await roomCollection.findOne({ roomId });
     if (!room) {
-      console.warn(`⚠️ [Validation Failed] Room not found: ${roomId}`);
-      return socket.emit("errorMessage", "Room not found");
+      console.log("❌ Room not found:", roomId);
+      return res.status(404).json({ error: "Room not found" });
+    }
+    if (String(room.companyId) !== String(decoded.companyId)) {
+      console.log("❌ Unauthorized company access:", room.companyId);
+      return res.status(403).json({ error: "Not authorized for this company" });
     }
 
-    if (room.companyId !== user.companyId) {
-      console.warn(
-        `⚠️ [Validation Failed] User ${user.userId} not authorized for company ${room.companyId}`
-      );
-      return socket.emit(
-        "errorMessage",
-        "You are not authorized to access this room"
-      );
+    // Delete all S3 voice files for the room
+    const voiceDeletionResult = await deleteS3VoicesByRoom(decoded, roomId);
+    console.log(`✅ Room voice deletion result:`, voiceDeletionResult);
+
+    // Delete all S3 files for the room
+    const fileDeletionResult = await deleteS3FilesByRoom(decoded, roomId);
+    console.log(`✅ Room file deletion result:`, fileDeletionResult);
+
+    // Delete all messages for the room
+    const messageCollection = db.collection("messages");
+    const messageDeletionResult = await messageCollection.deleteMany({ roomId });
+    console.log(`✅ Deleted ${messageDeletionResult.deletedCount} messages for room ${roomId}`);
+
+    // Delete the room from MongoDB
+    const deleteResult = await roomCollection.deleteOne({ roomId : roomId });
+    if (deleteResult.deletedCount === 0) {
+      console.log("❌ Failed to delete room:", roomId);
+      return res.status(500).json({ error: "Failed to delete room from rooms collection" });
     }
+    console.log("✅ Room deleted from rooms collection:", roomId);
 
-    // Check if the user is the room's creator
-    if (room.creator !== user.userId) {
-      console.warn(
-        `⚠️ [Validation Failed] User ${user.userId} is not the creator of room ${roomId}`
-      );
-      return socket.emit(
-        "errorMessage",
-        "Only the room creator can delete this room"
-      );
-    }
-
-    // Delete the room from the rooms collection
-    const result = await roomCollection.deleteOne({ roomId });
-    if (result.deletedCount === 0) {
-      console.warn(`⚠️ [Delete Failed] Room not deleted: ${roomId}`);
-      return socket.emit("errorMessage", "Failed to delete room");
-    }
-
-    // Optionally delete all messages associated with the room
-    await messageCollection.deleteMany({ roomId });
-    console.log(`🗑️ [Messages Deleted] All messages for room: ${roomId}`);
-
-    // Notify all users in the room (including the creator)
-    console.log(`🗑️ [Room Deleted] Room: ${roomId} by User: ${user.userId}`);
-    socket.to(roomId).emit("roomDeleted", {
+    // Emit Socket.IO event to notify clients
+    const io = req.app.get("io");
+    io.to(roomId).emit("roomDeleted", {
       roomId,
-      roomName: room.roomName,
-      message: "The room has been deleted by the creator",
-    });
-    socket.emit("roomDeleted", {
-      roomId,
-      roomName: room.roomName,
-      message: "You have successfully deleted the room",
+      userId: decoded.userId,
+      timestamp: new Date().toISOString(),
     });
 
-    // Remove all users from the socket room
-    socket.to(roomId).emit("userLeftRoom", {
-      userId: user.userId,
-      username: user.firstName || "Anonymous",
-      roomId,
-      roomName: room.roomName,
+    res.status(200).json({
+      message: `Successfully deleted room ${roomId}, ${voiceDeletionResult.deletedCount} voice files, ${fileDeletionResult.deletedCount} files, and ${messageDeletionResult.deletedCount} messages`,
+      deletedRoomCount: deleteResult.deletedCount,
+      deletedVoiceCount: voiceDeletionResult.deletedCount,
+      deletedFileCount: fileDeletionResult.deletedCount,
+      deletedMessageCount: messageDeletionResult.deletedCount,
     });
-    socket.leave(roomId);
-
   } catch (error) {
-    console.error("❌ [handleDeleteRoom Error]:", error.message);
-    socket.emit("errorMessage", "Server error while deleting room");
+    console.error("❌ [Delete Room Error]:", error.message, error.stack);
+    res.status(500).json({
+      error: `An unexpected error occurred while deleting the room: ${error.message}`,
+    });
+  }
+};
+
+export const getRooms = async (req, res) => {
+  try {
+    const token = req.cookies.token;
+    if (!token) {
+      return res.status(401).json({ error: "Token missing" });
+    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (!decoded) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    const db = getDB();
+    const roomCollection = db.collection("rooms");
+    const rooms = await roomCollection
+      .find({
+        users: decoded.userId,
+        companyId: new ObjectId(decoded.companyId),
+      })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      data: rooms.map((room) => ({
+        roomId: room.roomId,
+        roomName: room.roomName,
+        users: room.users,
+        creator: room.creator,
+      })),
+    });
+  } catch (error) {
+    console.error("Error fetching rooms:", error.message, error.stack);
+    res.status(500).json({ error: `Failed to fetch rooms: ${error.message}` });
   }
 };

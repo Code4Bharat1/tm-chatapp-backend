@@ -16,7 +16,7 @@ dotenv.config();
 
 // In-memory store for rooms (supplemented by database in production)
 const rooms = new Map(); // Map<roomId, { roomName: string, users: string[], creator: string }>
-
+const onlineUsersByRoom = new Map(); // Map<roomId, Map<userId, { userId: string, username: string }>>
 export const initializeSocket = (server, allowedOrigins) => {
   const io = new Server(server, {
     cors: {
@@ -417,26 +417,45 @@ export const initializeSocket = (server, allowedOrigins) => {
           );
         }
         socket.join(roomId);
-        console.log(
-          `✅ [User Joined Room] userId=${socket.user.userId}, roomId=${roomId}`
-        );
-        const onlineUsers = [];
-        io.sockets.sockets.forEach((client) => {
-          if (client.rooms.has(roomId) && client.user) {
-            onlineUsers.push({
-              userId: client.user.userId,
-              username: client.user.firstName || "Anonymous",
-            });
-          }
+
+        // Initialize onlineUsers for the room if not exists
+        if (!onlineUsersByRoom.has(roomId)) {
+          onlineUsersByRoom.set(roomId, new Map());
+        }
+
+        // Add user to onlineUsers
+        onlineUsersByRoom.get(roomId).set(socket.user.userId, {
+          userId: socket.user.userId,
+          username: socket.user.firstName || "Anonymous",
         });
+
+        // Get unique online users
+        const onlineUsers = Array.from(onlineUsersByRoom.get(roomId).values());
+
+        console.log(
+          `✅ [User Joined Room] userId=${socket.user.userId}, roomId=${roomId}, onlineUsers=`,
+          onlineUsers
+        );
+
+        // Emit joinConfirmation to the joining client
         socket.emit("joinConfirmation", {
           room: roomId,
           roomName: room.roomName,
           users: onlineUsers,
         });
+
+        // Emit userJoined to other clients
         socket.to(roomId).emit("userJoined", {
-          userId: socket.user.userId,
-          username: socket.user.firstName || "Anonymous",
+          user: {
+            userId: socket.user.userId,
+            username: socket.user.firstName || "Anonymous",
+          },
+          roomId,
+        });
+
+        // Emit onlineUsersUpdate to all clients in the room
+        io.to(roomId).emit("onlineUsersUpdate", {
+          users: onlineUsers,
           roomId,
         });
       } catch (error) {
@@ -453,7 +472,6 @@ export const initializeSocket = (server, allowedOrigins) => {
         `📥 [Leave Room Request] From ${socket.user.userId}: roomId=${roomId}`
       );
       try {
-        // Call the handleLeaveRoom controller
         await handleLeaveRoom(socket, roomId);
 
         // Update in-memory rooms Map after successful database update
@@ -465,7 +483,24 @@ export const initializeSocket = (server, allowedOrigins) => {
             creator: room.creator,
           });
         } else {
-          rooms.delete(roomId); // Remove from in-memory if room was deleted
+          rooms.delete(roomId);
+          onlineUsersByRoom.delete(roomId); // Clean up online users
+        }
+
+        // Remove user from onlineUsers
+        if (onlineUsersByRoom.has(roomId)) {
+          onlineUsersByRoom.get(roomId).delete(socket.user.userId);
+          const onlineUsers = Array.from(
+            onlineUsersByRoom.get(roomId).values()
+          );
+          io.to(roomId).emit("onlineUsersUpdate", {
+            users: onlineUsers,
+            roomId,
+          });
+          console.log(
+            `📤 [onlineUsersUpdate after leave] roomId=${roomId}, users=`,
+            onlineUsers
+          );
         }
       } catch (error) {
         console.error("❌ [Leave Room Error]:", error.message);
@@ -477,18 +512,28 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("deleteRoom", (data) => {
-      handleDeleteRoom(socket, data); // Pass socket and event data
+      handleDeleteRoom(socket, data);
+      // Clean up onlineUsersByRoom
+      if (onlineUsersByRoom.has(data.roomId)) {
+        onlineUsersByRoom.delete(data.roomId);
+      }
     });
 
     socket.on("disconnect", () => {
       console.log(`❌ [Socket Disconnected] User ID: ${socket.user.userId}`);
-      socket.rooms.forEach((roomId) => {
-        if (roomId !== socket.id && roomId !== companyRoom) {
-          socket.to(roomId).emit("userLeft", {
-            userId: socket.user.userId,
-            username: socket.user.firstName || "Anonymous",
+      // Remove user from all rooms' onlineUsers
+      onlineUsersByRoom.forEach((users, roomId) => {
+        if (users.has(socket.user.userId)) {
+          users.delete(socket.user.userId);
+          const onlineUsers = Array.from(users.values());
+          io.to(roomId).emit("onlineUsersUpdate", {
+            users: onlineUsers,
             roomId,
           });
+          console.log(
+            `📤 [onlineUsersUpdate on disconnect] roomId=${roomId}, users=`,
+            onlineUsers
+          );
         }
       });
     });

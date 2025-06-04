@@ -5,6 +5,7 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
+  HeadObjectCommand, // Added
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { fileURLToPath } from "url";
@@ -573,7 +574,7 @@ export const getFilesByRoom = async (req, res) => {
         .json({ success: false, error: "Not authorized to access this room" });
     }
 
-    // Fetch messages from MongoDB
+    // Fetch file messages from MongoDB
     const messageCollection = db.collection("messages");
     const messages = await messageCollection
       .find({
@@ -583,65 +584,93 @@ export const getFilesByRoom = async (req, res) => {
       .sort({ timestamp: -1 })
       .toArray();
 
-    // Generate presigned URLs for file messages
+    // Validate files in S3 and generate presigned URLs
     const messagesWithUrls = await Promise.all(
       messages.map(async (message) => {
-        if (message.file && message.file.s3Key) {
-          try {
+        try {
+          let fileData = null;
+          if (message.file && message.file.s3Key) {
+            // Validate file existence in S3
+            const headParams = {
+              Bucket: process.env.AWS_BUCKET_NAME,
+              Key: message.file.s3Key,
+            };
+            await s3.send(new HeadObjectCommand(headParams));
+            console.log(`✅ S3 File Exists: ${message.file.s3Key}`);
+
+            // Generate presigned URL
             const presignedUrl = await getSignedUrl(
               s3,
               new GetObjectCommand({
                 Bucket: process.env.AWS_BUCKET_NAME,
                 Key: message.file.s3Key,
               }),
-              { expiresIn: 3600 }
+              { expiresIn: 3600 } // 1-hour expiry
             );
-            return {
-              ...message,
-              _id: message._id.toString(),
-              timestamp: message.timestamp.toISOString(),
-              file: { ...message.file, url: presignedUrl },
-            };
-          } catch (urlError) {
-            console.error(
-              `❌ [Presigned URL Error] Message ID: ${
-                message._id
-              }, File: ${JSON.stringify(message.file)}`,
-              urlError.message
-            );
-            return {
-              ...message,
-              _id: message._id.toString(),
-              timestamp: message.timestamp.toISOString(),
-              file: {
-                ...message.file,
-                url: null,
-                error: "Failed to generate presigned URL",
-              },
+
+            fileData = {
+              filename: message.file.filename,
+              originalName: message.file.originalName,
+              mimeType: message.file.mimeType,
+              size: message.file.size,
+              url: presignedUrl,
             };
           }
+
+          const messageData = {
+            _id: message._id.toString(),
+            message: message.message || (fileData ? "File uploaded" : ""),
+            userId: message.userId,
+            username: message.username || "Anonymous",
+            roomId: message.roomId,
+            timestamp: message.timestamp.toISOString(),
+            updatedAt: message.updatedAt ? message.updatedAt.toISOString() : undefined,
+          };
+
+          if (fileData) {
+            messageData.file = fileData;
+          }
+
+          console.log(`📤 [Processed Message]:`, JSON.stringify(messageData));
+          return messageData;
+        } catch (s3Error) {
+          console.error(
+            `❌ [S3 Error] Message ID: ${message._id}, File: ${message.file?.s3Key || "N/A"}`,
+            s3Error.message
+          );
+          // Include text messages even if file validation fails
+          if (!message.file) {
+            return {
+              _id: message._id.toString(),
+              message: message.message || "",
+              userId: message.userId,
+              username: message.username || "Anonymous",
+              roomId: message.roomId,
+              timestamp: message.timestamp.toISOString(),
+              updatedAt: message.updatedAt ? message.updatedAt.toISOString() : undefined,
+            };
+          }
+          return null; // Skip invalid file messages
         }
-        return {
-          ...message,
-          _id: message._id.toString(),
-          timestamp: message.timestamp.toISOString(),
-        };
       })
     );
 
+    // Filter out null entries
+    const validMessages = messagesWithUrls.filter((msg) => msg !== null);
+
     console.log(
-      `📜 [Fetched ${messagesWithUrls.length} files] for room: ${roomId}`
+      `📜 [Fetched ${validMessages.length} messages] for room: ${roomId}`
     );
     res.status(200).json({
       success: true,
       message: "Messages retrieved successfully",
-      data: messagesWithUrls, // Changed to 'data'
+      data: validMessages,
     });
   } catch (error) {
-    console.error("❌ [Get Files Error]:", error.message, error.stack, error);
+    console.error("❌ [Get Files Error]:", error.message, error.stack);
     res.status(500).json({
       success: false,
-      error: `An unexpected error occurred while retrieving files: ${error.message}`,
+      error: `An unexpected error occurred while retrieving messages: ${error.message}`,
     });
   }
 };

@@ -5,6 +5,7 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
+  HeadObjectCommand, // Added
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { fileURLToPath } from "url";
@@ -388,10 +389,19 @@ export const deleteVoice = async (req, res) => {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    const allowedRoles = ["Employee", "CEO", "Manager", "HR", "Client", "TeamLeader"];
+    const allowedRoles = [
+      "Employee",
+      "CEO",
+      "Manager",
+      "HR",
+      "Client",
+      "TeamLeader",
+    ];
     if (!allowedRoles.includes(decoded.position)) {
       console.log("❌ Insufficient permissions:", decoded.position);
-      return res.status(403).json({ error: "Insufficient position permissions" });
+      return res
+        .status(403)
+        .json({ error: "Insufficient position permissions" });
     }
 
     // Get voiceId from URL parameter
@@ -423,11 +433,18 @@ export const deleteVoice = async (req, res) => {
       const room = await roomCollection.findOne({ roomId });
       if (!room || !room.users.includes(decoded.userId)) {
         console.log("❌ Not authorized for room:", roomId);
-        return res.status(403).json({ error: "Not authorized to delete this voice" });
+        return res
+          .status(403)
+          .json({ error: "Not authorized to delete this voice" });
       }
-    } else if (roomId.startsWith("company_") && roomId !== `company_${decoded.companyId}`) {
+    } else if (
+      roomId.startsWith("company_") &&
+      roomId !== `company_${decoded.companyId}`
+    ) {
       console.log("❌ Not authorized for company room:", roomId);
-      return res.status(403).json({ error: "Not authorized to delete this voice" });
+      return res
+        .status(403)
+        .json({ error: "Not authorized to delete this voice" });
     }
 
     // Delete from S3
@@ -461,7 +478,12 @@ export const deleteVoice = async (req, res) => {
     console.log(`🗑️ [Deleted voice] ${voiceId}`);
     res.status(200).json({ message: "Voice deleted successfully" });
   } catch (error) {
-    console.error("❌ [Voice Delete Error]:", error.message, error.stack, error);
+    console.error(
+      "❌ [Voice Delete Error]:",
+      error.message,
+      error.stack,
+      error
+    );
     res.status(500).json({
       error: `An unexpected error occurred while deleting voice: ${error.message}`,
     });
@@ -471,7 +493,9 @@ export const deleteVoice = async (req, res) => {
 // Delete all voice messages for a company
 export const deleteS3VoicesByRoom = async (user, roomId) => {
   try {
-    console.log(`🗑️ [Delete S3 Voices] roomId=${roomId}, userId=${user.userId}`);
+    console.log(
+      `🗑️ [Delete S3 Voices] roomId=${roomId}, userId=${user.userId}`
+    );
 
     // Validate inputs
     if (!user || !user.userId || !user.companyId) {
@@ -488,7 +512,7 @@ export const deleteS3VoicesByRoom = async (user, roomId) => {
     // Verify room access
     const room = await roomCollection.findOne({ roomId });
     if (!room) {
-      throw new Error("Room not found");
+      throw new Error(`Room not found: ${roomId}`);
     }
     if (String(room.companyId) !== String(user.companyId)) {
       throw new Error("User not authorized for this room’s company");
@@ -501,17 +525,27 @@ export const deleteS3VoicesByRoom = async (user, roomId) => {
     const messages = await messageCollection
       .find({
         roomId,
-        companyId: new ObjectId(user.companyId),
         voice: { $exists: true },
       })
       .toArray();
+    console.log(
+      `🔍 Found ${messages.length} messages with voice field for room ${roomId}`,
+      messages
+    );
 
     // Collect S3 keys
     const voiceKeys = messages
-      .filter((message) => message.voice && message.voice.s3Key)
+      .filter(
+        (message) =>
+          message.voice &&
+          message.voice.s3Key &&
+          typeof message.voice.s3Key === "string"
+      )
       .map((message) => ({ Key: message.voice.s3Key }));
+    console.log(`🔍 Collected ${voiceKeys.length} voice S3 keys:`, voiceKeys);
 
     // Delete voice files from S3
+    let deletedCount = 0;
     if (voiceKeys.length > 0) {
       const deleteParams = {
         Bucket: process.env.AWS_BUCKET_NAME,
@@ -521,13 +555,19 @@ export const deleteS3VoicesByRoom = async (user, roomId) => {
         },
       };
       console.log("Deleting S3 voice files:", deleteParams);
-      await s3.send(new DeleteObjectsCommand(deleteParams));
-      console.log(`✅ Deleted ${voiceKeys.length} S3 voice files for room ${roomId}`);
+      const result = await s3.send(new DeleteObjectsCommand(deleteParams));
+      deletedCount = result.Deleted ? result.Deleted.length : voiceKeys.length;
+      console.log(
+        `✅ Deleted ${deletedCount} S3 voice files for room ${roomId}`
+      );
+      if (result.Errors && result.Errors.length > 0) {
+        console.error("❌ S3 deletion errors:", result.Errors);
+      }
     } else {
-      console.log(`No S3 voice files to delete for room ${roomId}`);
+      console.log(`No valid S3 voice files to delete for room ${roomId}`);
     }
 
-    return { success: true, deletedCount: voiceKeys.length };
+    return { success: true, deletedCount };
   } catch (error) {
     console.error("❌ [Delete S3 Voices Error]:", error.message, error.stack);
     throw error;
@@ -544,20 +584,23 @@ export const getAllCompanyVoices = async (req, res) => {
     const cookieHeader = req.headers.cookie;
     if (!cookieHeader) {
       console.log("❌ No cookies sent");
-      return res.status(401).json({ error: "No cookies sent" });
+      return res.status(401).json({ success: false, error: "No cookies sent" });
     }
 
     const cookies = cookie.parse(cookieHeader);
     const token = cookies.token;
     if (!token) {
       console.log("❌ Token missing");
-      return res.status(401).json({ error: "Token missing" });
+      return res.status(401).json({ success: false, error: "Token missing" });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      console.log("❌ Invalid token");
-      return res.status(401).json({ error: "Invalid token" });
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      console.log("🔍 [JWT Decoded]:", decoded);
+    } catch (jwtError) {
+      console.log("❌ Invalid token:", jwtError.message);
+      return res.status(401).json({ success: false, error: "Invalid token" });
     }
 
     const allowedRoles = [
@@ -572,26 +615,36 @@ export const getAllCompanyVoices = async (req, res) => {
       console.log("❌ Insufficient permissions:", decoded.position);
       return res
         .status(403)
-        .json({ error: "Insufficient position permissions" });
+        .json({ success: false, error: "Insufficient position permissions" });
     }
 
     // Get roomId from URL parameter
     const { roomId } = req.params;
     if (!roomId) {
       console.log("❌ No roomId provided");
-      return res.status(400).json({ error: "roomId is required" });
+      return res
+        .status(400)
+        .json({ success: false, error: "roomId is required" });
     }
+    console.log("🔍 [Query Room ID]:", roomId);
 
     // Verify room access
     const db = getDB();
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
-      if (!room || !room.users.includes(decoded.userId)) {
-        console.log("❌ Not authorized for room:", roomId);
+      if (!room) {
+        console.log("❌ Room not found:", roomId);
         return res
-          .status(403)
-          .json({ error: "Not authorized to access this room" });
+          .status(404)
+          .json({ success: false, error: "Room not found" });
+      }
+      if (!room.users.includes(decoded.userId)) {
+        console.log("❌ Not authorized for room:", roomId);
+        return res.status(403).json({
+          success: false,
+          error: "Not authorized to access this room",
+        });
       }
     } else if (
       roomId.startsWith("company_") &&
@@ -600,57 +653,111 @@ export const getAllCompanyVoices = async (req, res) => {
       console.log("❌ Not authorized for company room:", roomId);
       return res
         .status(403)
-        .json({ error: "Not authorized to access this room" });
+        .json({ success: false, error: "Not authorized to access this room" });
     }
 
     // Fetch voice messages from MongoDB
     const messageCollection = db.collection("messages");
     const voiceMessages = await messageCollection
-      .find({ roomId, voice: { $exists: true } })
+      .find({
+        $or: [
+          { roomId: roomId },
+          { companyId: ObjectId.createFromHexString(decoded.companyId) }, // Ensure ObjectId
+        ],
+      })
+      .sort({ timestamp: -1 })
       .toArray();
 
-    // Generate presigned URLs for each voice message
+    console.log(
+      `📜 [Found ${voiceMessages.length} voice messages in MongoDB] for room: ${roomId}`,
+      voiceMessages.map((msg) => ({ _id: msg._id, voice: msg.voice }))
+    );
+
+    if (voiceMessages.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "No voice messages found",
+        data: [],
+      });
+    }
+
+    // Generate presigned URLs for valid voice messages
     const messagesWithDetails = await Promise.all(
       voiceMessages.map(async (msg) => {
-        const presignedUrl = await getSignedUrl(
-          s3,
-          new GetObjectCommand({
+        if (!msg.voice || !msg.voice.s3Key) {
+          console.warn(`⚠️ [Invalid Voice Metadata] Message ID: ${msg._id}`, {
+            message: msg,
+          });
+          return null;
+        }
+
+        try {
+          // Validate file existence in S3
+          const headParams = {
             Bucket: process.env.AWS_BUCKET_NAME,
             Key: msg.voice.s3Key,
-          }),
-          { expiresIn: 3600 }
-        );
-        return {
-          _id: msg._id.toString(),
-          message: msg.message,
-          userId: msg.userId,
-          username: msg.username,
-          roomId: msg.roomId,
-          timestamp: msg.timestamp.toISOString(),
-          voice: {
-            filename: msg.voice.filename,
-            originalName: msg.voice.originalName,
-            mimeType: msg.voice.mimeType,
-            size: msg.voice.size,
-            url: presignedUrl,
-          },
-        };
+          };
+          await s3.send(new HeadObjectCommand(headParams));
+          console.log(`✅ S3 Voice Exists: ${msg.voice.s3Key}`);
+
+          // Generate presigned URL
+          const presignedUrl = await getSignedUrl(
+            s3,
+            new GetObjectCommand({
+              Bucket: process.env.AWS_BUCKET_NAME,
+              Key: msg.voice.s3Key,
+            }),
+            { expiresIn: 3600 }
+          );
+
+          const messageData = {
+            _id: msg._id.toString(),
+            message: msg.message || "Voice message",
+            userId: msg.userId,
+            username: msg.username || "Anonymous",
+            roomId: msg.roomId,
+            timestamp: msg.timestamp.toISOString(),
+            voice: {
+              filename: msg.voice.filename,
+              originalName: msg.voice.originalName,
+              mimeType: msg.voice.mimeType,
+              size: msg.voice.size,
+              url: presignedUrl,
+            },
+          };
+
+          console.log(
+            `📤 [Processed Voice Message]:`,
+            JSON.stringify(messageData)
+          );
+          return messageData;
+        } catch (s3Error) {
+          console.error(
+            `❌ [S3 Error] Message ID: ${msg._id}, Voice: ${msg.voice.s3Key}`,
+            s3Error.message
+          );
+          return null;
+        }
       })
     );
 
+    // Filter out null entries
+    const validMessages = messagesWithDetails.filter((msg) => msg !== null);
+
     console.log(
-      `📥 [Fetched ${messagesWithDetails.length} voice messages] for room: ${roomId}`
+      `📥 [Fetched ${validMessages.length} valid voice messages] for room: ${roomId}`
     );
 
     res.status(200).json({
       success: true,
       message: "Voice messages retrieved successfully",
-      messages: messagesWithDetails, // Changed from 'voices' to 'messages'
+      data: validMessages,
     });
   } catch (error) {
     console.error("❌ [Fetch All Voices Error]:", error.message, error.stack);
     res.status(500).json({
-      error: `An unexpected error occurred while fetching voice files: ${error.message}`,
+      success: false,
+      error: `An unexpected error occurred while fetching voice messages: ${error.message}`,
     });
   }
 };

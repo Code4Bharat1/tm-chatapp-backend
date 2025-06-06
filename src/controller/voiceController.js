@@ -5,13 +5,11 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
-  HeadObjectCommand, // Added
+  HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { fileURLToPath } from "url";
 import path from "path";
-import jwt from "jsonwebtoken";
-import cookie from "cookie";
 import { getDB } from "../services/db.js";
 import { ObjectId } from "mongodb";
 import dotenv from "dotenv";
@@ -77,11 +75,7 @@ export const voiceUploadMiddleware = (req, res, next) => {
 
 export const uploadVoice = async (req, res) => {
   try {
-    console.log("AWS_ACCESS_KEY_ID:", process.env.AWS_ACCESS_KEY_ID);
-    console.log("AWS_SECRET_ACCESS_KEY:", process.env.AWS_SECRET_ACCESS_KEY);
-    console.log("AWS_REGION:", process.env.AWS_REGION);
-    console.log("AWS_BUCKET_NAME:", process.env.AWS_BUCKET_NAME);
-
+    // Check AWS environment variables
     if (
       !process.env.AWS_ACCESS_KEY_ID ||
       !process.env.AWS_SECRET_ACCESS_KEY ||
@@ -97,27 +91,10 @@ export const uploadVoice = async (req, res) => {
     console.log("📥 [Voice Upload Request] Headers:", req.headers);
     console.log("📥 [Voice Upload Request] Body:", req.body);
     console.log("📥 [Voice Upload Request] File:", req.file);
+    console.log("📥 [Voice Upload Request] User:", req.user);
 
-    // Authenticate user
-    const cookieHeader = req.headers.cookie;
-    if (!cookieHeader) {
-      console.log("❌ No cookies sent");
-      return res.status(401).json({ error: "No cookies sent" });
-    }
-
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
-    if (!token) {
-      console.log("❌ Token missing");
-      return res.status(401).json({ error: "Token missing" });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      console.log("❌ Invalid token");
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
+    // Use user data from authMiddleware
+    const user = req.user;
     const allowedRoles = [
       "Employee",
       "CEO",
@@ -126,8 +103,8 @@ export const uploadVoice = async (req, res) => {
       "Client",
       "TeamLeader",
     ];
-    if (!allowedRoles.includes(decoded.position)) {
-      console.log("❌ Insufficient permissions:", decoded.position);
+    if (!allowedRoles.includes(user.position)) {
+      console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ error: "Insufficient position permissions" });
@@ -158,12 +135,12 @@ export const uploadVoice = async (req, res) => {
 
     const db = getDB();
     const messageCollection = db.collection("messages");
-    const roomId = req.body.roomId || `company_${decoded.companyId}`; // Fixed: Use companyId
+    const roomId = req.body.roomId || `company_${user.companyId}`;
     console.log("📤 [Uploading voice to room]:", roomId);
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
-      if (!room || !room.users.includes(decoded.userId)) {
+      if (!room || !room.users.includes(user.userId)) {
         console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
@@ -175,13 +152,13 @@ export const uploadVoice = async (req, res) => {
     const voiceMetadata = {
       _id: new ObjectId(),
       message: "Voice file uploaded",
-      userId: decoded.userId,
-      username: decoded.firstName || "Anonymous",
-      roomId: roomId, // Fixed: Use string roomId
-      companyId: decoded.companyId, // Store companyId as string
+      userId: user.userId,
+      username: user.firstName || "Anonymous",
+      roomId,
+      companyId: new ObjectId(user.companyId),
       timestamp: new Date(),
       voice: {
-        filename: filename,
+        filename,
         originalName: req.file.originalname,
         mimeType: req.file.mimetype,
         size: req.file.size,
@@ -248,29 +225,10 @@ export const downloadVoice = async (req, res) => {
   try {
     console.log("📥 [Voice Download Request] Headers:", req.headers);
     console.log("📥 [Voice Download Request] Params:", req.params);
+    console.log("📥 [Voice Download Request] User:", req.user);
 
-    // Authenticate user
-    const cookieHeader = req.headers.cookie;
-    if (!cookieHeader) {
-      console.log("❌ No cookies sent");
-      return res.status(401).json({ error: "No cookies sent" });
-    }
-
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
-    if (!token) {
-      console.log("❌ Token missing");
-      return res.status(401).json({ error: "Token missing" });
-    }
-
-    let decoded;
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (err) {
-      console.log("❌ Invalid token:", err.message);
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
+    // Use user data from authMiddleware
+    const user = req.user;
     const allowedRoles = [
       "Employee",
       "CEO",
@@ -279,8 +237,8 @@ export const downloadVoice = async (req, res) => {
       "Client",
       "TeamLeader",
     ];
-    if (!allowedRoles.includes(decoded.position)) {
-      console.log("❌ Insufficient permissions:", decoded.position);
+    if (!allowedRoles.includes(user.position)) {
+      console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ error: "Insufficient position permissions" });
@@ -296,7 +254,6 @@ export const downloadVoice = async (req, res) => {
     // Find voice file metadata in MongoDB
     const db = getDB();
     const messageCollection = db.collection("messages");
-    // Try querying by message _id or voice.filename
     const voiceMetadata = await messageCollection.findOne({
       $or: [
         { _id: voiceId }, // If voiceId is the message _id
@@ -309,15 +266,12 @@ export const downloadVoice = async (req, res) => {
       return res.status(404).json({ error: "Voice file not found" });
     }
 
-    // Log the found metadata for debugging
-    console.log("📄 [Voice Metadata]:", voiceMetadata);
-
     // Verify room access
     const roomId = voiceMetadata.roomId;
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
-      if (!room || !room.users.includes(decoded.userId)) {
+      if (!room || !room.users.includes(user.userId)) {
         console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
@@ -325,7 +279,7 @@ export const downloadVoice = async (req, res) => {
       }
     } else if (
       roomId.startsWith("company_") &&
-      roomId !== `company_${decoded.companyId}`
+      roomId !== `company_${user.companyId}`
     ) {
       console.log("❌ Not authorized for company room:", roomId);
       return res
@@ -363,32 +317,14 @@ export const downloadVoice = async (req, res) => {
   }
 };
 
-// Delete a single voice message by voiceId
 export const deleteVoice = async (req, res) => {
   try {
     console.log("🗑️ [Voice Delete Request] Headers:", req.headers);
     console.log("🗑️ [Voice Delete Request] Params:", req.params);
+    console.log("🗑️ [Voice Delete Request] User:", req.user);
 
-    // Authenticate user
-    const cookieHeader = req.headers.cookie;
-    if (!cookieHeader) {
-      console.log("❌ No cookies sent");
-      return res.status(401).json({ error: "No cookies sent" });
-    }
-
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
-    if (!token) {
-      console.log("❌ Token missing");
-      return res.status(401).json({ error: "Token missing" });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      console.log("❌ Invalid token");
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
+    // Use user data from authMiddleware
+    const user = req.user;
     const allowedRoles = [
       "Employee",
       "CEO",
@@ -397,8 +333,8 @@ export const deleteVoice = async (req, res) => {
       "Client",
       "TeamLeader",
     ];
-    if (!allowedRoles.includes(decoded.position)) {
-      console.log("❌ Insufficient permissions:", decoded.position);
+    if (!allowedRoles.includes(user.position)) {
+      console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ error: "Insufficient position permissions" });
@@ -431,7 +367,7 @@ export const deleteVoice = async (req, res) => {
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
-      if (!room || !room.users.includes(decoded.userId)) {
+      if (!room || !room.users.includes(user.userId)) {
         console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
@@ -439,7 +375,7 @@ export const deleteVoice = async (req, res) => {
       }
     } else if (
       roomId.startsWith("company_") &&
-      roomId !== `company_${decoded.companyId}`
+      roomId !== `company_${user.companyId}`
     ) {
       console.log("❌ Not authorized for company room:", roomId);
       return res
@@ -463,14 +399,14 @@ export const deleteVoice = async (req, res) => {
     // Delete from MongoDB
     await messageCollection.deleteOne({
       "voice.filename": voiceId,
-      companyId: new ObjectId(decoded.companyId),
+      companyId: new ObjectId(user.companyId),
     });
 
     // Emit socket event
     const io = req.app.get("io");
     io.to(roomId).emit("voiceDeleted", {
-      voiceId: voiceId,
-      roomId: roomId,
+      voiceId,
+      roomId,
       message: "Voice deleted",
       timestamp: new Date().toISOString(),
     });
@@ -478,31 +414,35 @@ export const deleteVoice = async (req, res) => {
     console.log(`🗑️ [Deleted voice] ${voiceId}`);
     res.status(200).json({ message: "Voice deleted successfully" });
   } catch (error) {
-    console.error(
-      "❌ [Voice Delete Error]:",
-      error.message,
-      error.stack,
-      error
-    );
+    console.error("❌ [Voice Delete Error]:", error.message, error.stack);
     res.status(500).json({
       error: `An unexpected error occurred while deleting voice: ${error.message}`,
     });
   }
 };
 
-// Delete all voice messages for a company
-export const deleteS3VoicesByRoom = async (user, roomId) => {
+export const deleteS3VoicesByRoom = async (req, res) => {
   try {
-    console.log(
-      `🗑️ [Delete S3 Voices] roomId=${roomId}, userId=${user.userId}`
-    );
+    console.log("🗑️ [Delete S3 Voices Request] Headers:", req.headers);
+    console.log("🗑️ [Delete S3 Voices Request] Params:", req.params);
+    console.log("🗑️ [Delete S3 Voices Request] User:", req.user);
+
+    // Use user data from authMiddleware
+    const user = req.user;
+    const { roomId } = req.params;
 
     // Validate inputs
     if (!user || !user.userId || !user.companyId) {
-      throw new Error("User authentication required");
+      console.log("❌ Missing user data");
+      return res
+        .status(401)
+        .json({ error: "User authentication required: missing userId or companyId" });
     }
     if (!roomId || typeof roomId !== "string" || roomId.trim() === "") {
-      throw new Error("Room ID is required and must be a non-empty string");
+      console.log("❌ Invalid roomId");
+      return res
+        .status(400)
+        .json({ error: "Room ID is required and must be a non-empty string" });
     }
 
     const db = getDB();
@@ -512,13 +452,20 @@ export const deleteS3VoicesByRoom = async (user, roomId) => {
     // Verify room access
     const room = await roomCollection.findOne({ roomId });
     if (!room) {
-      throw new Error(`Room not found: ${roomId}`);
+      console.log("❌ Room not found:", roomId);
+      return res.status(404).json({ error: `Room not found: ${roomId}` });
     }
     if (String(room.companyId) !== String(user.companyId)) {
-      throw new Error("User not authorized for this room’s company");
+      console.log("❌ User not authorized for room:", roomId);
+      return res
+        .status(403)
+        .json({ error: "User not authorized for this room’s company" });
     }
     if (roomId.startsWith("room_") && !room.users.includes(user.userId)) {
-      throw new Error("User not authorized for this room");
+      console.log("❌ User not authorized for room:", roomId);
+      return res
+        .status(403)
+        .json({ error: "User not authorized for this room" });
     }
 
     // Fetch messages with voice files
@@ -529,8 +476,7 @@ export const deleteS3VoicesByRoom = async (user, roomId) => {
       })
       .toArray();
     console.log(
-      `🔍 Found ${messages.length} messages with voice field for room ${roomId}`,
-      messages
+      `🔍 Found ${messages.length} messages with voice field for room ${roomId}`
     );
 
     // Collect S3 keys
@@ -542,7 +488,7 @@ export const deleteS3VoicesByRoom = async (user, roomId) => {
           typeof message.voice.s3Key === "string"
       )
       .map((message) => ({ Key: message.voice.s3Key }));
-    console.log(`🔍 Collected ${voiceKeys.length} voice S3 keys:`, voiceKeys);
+    console.log(`🔍 Collected ${voiceKeys.length} voice S3 keys`);
 
     // Delete voice files from S3
     let deletedCount = 0;
@@ -563,46 +509,41 @@ export const deleteS3VoicesByRoom = async (user, roomId) => {
       if (result.Errors && result.Errors.length > 0) {
         console.error("❌ S3 deletion errors:", result.Errors);
       }
+
+      // Delete corresponding messages from MongoDB
+      await messageCollection.deleteMany({
+        roomId,
+        voice: { $exists: true },
+      });
     } else {
       console.log(`No valid S3 voice files to delete for room ${roomId}`);
     }
 
-    return { success: true, deletedCount };
+    // Emit socket event
+    const io = req.app.get("io");
+    io.to(roomId).emit("voicesDeleted", {
+      roomId,
+      message: `Deleted ${deletedCount} voice files`,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.status(200).json({ success: true, deletedCount });
   } catch (error) {
     console.error("❌ [Delete S3 Voices Error]:", error.message, error.stack);
-    throw error;
+    res.status(500).json({
+      error: `An unexpected error occurred while deleting voice files: ${error.message}`,
+    });
   }
 };
 
-// Fetch all voice messages for a company
 export const getAllCompanyVoices = async (req, res) => {
   try {
     console.log("📥 [Fetch All Voices Request] Headers:", req.headers);
     console.log("📥 [Fetch All Voices Request] Params:", req.params);
+    console.log("📥 [Fetch All Voices Request] User:", req.user);
 
-    // Authenticate user
-    const cookieHeader = req.headers.cookie;
-    if (!cookieHeader) {
-      console.log("❌ No cookies sent");
-      return res.status(401).json({ success: false, error: "No cookies sent" });
-    }
-
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
-    if (!token) {
-      console.log("❌ Token missing");
-      return res.status(401).json({ success: false, error: "Token missing" });
-    }
-
-    let decoded;
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-      console.log("🔍 [JWT Decoded]:", decoded);
-    } catch (jwtError) {
-      console.log("❌ Invalid token:", jwtError.message);
-      return res.status(401).json({ success: false, error: "Invalid token" });
-    }
-
+    // Use user data from authMiddleware
+    const user = req.user;
     const allowedRoles = [
       "Employee",
       "CEO",
@@ -611,8 +552,8 @@ export const getAllCompanyVoices = async (req, res) => {
       "Client",
       "TeamLeader",
     ];
-    if (!allowedRoles.includes(decoded.position)) {
-      console.log("❌ Insufficient permissions:", decoded.position);
+    if (!allowedRoles.includes(user.position)) {
+      console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ success: false, error: "Insufficient position permissions" });
@@ -626,7 +567,6 @@ export const getAllCompanyVoices = async (req, res) => {
         .status(400)
         .json({ success: false, error: "roomId is required" });
     }
-    console.log("🔍 [Query Room ID]:", roomId);
 
     // Verify room access
     const db = getDB();
@@ -639,16 +579,15 @@ export const getAllCompanyVoices = async (req, res) => {
           .status(404)
           .json({ success: false, error: "Room not found" });
       }
-      if (!room.users.includes(decoded.userId)) {
+      if (!room.users.includes(user.userId)) {
         console.log("❌ Not authorized for room:", roomId);
-        return res.status(403).json({
-          success: false,
-          error: "Not authorized to access this room",
-        });
+        return res
+          .status(403)
+          .json({ success: false, error: "Not authorized to access this room" });
       }
     } else if (
       roomId.startsWith("company_") &&
-      roomId !== `company_${decoded.companyId}`
+      roomId !== `company_${user.companyId}`
     ) {
       console.log("❌ Not authorized for company room:", roomId);
       return res
@@ -660,17 +599,15 @@ export const getAllCompanyVoices = async (req, res) => {
     const messageCollection = db.collection("messages");
     const voiceMessages = await messageCollection
       .find({
-        $or: [
-          { roomId: roomId },
-          { companyId: ObjectId.createFromHexString(decoded.companyId) }, // Ensure ObjectId
-        ],
+        roomId,
+        companyId: new ObjectId(user.companyId),
+        voice: { $exists: true },
       })
       .sort({ timestamp: -1 })
       .toArray();
 
     console.log(
-      `📜 [Found ${voiceMessages.length} voice messages in MongoDB] for room: ${roomId}`,
-      voiceMessages.map((msg) => ({ _id: msg._id, voice: msg.voice }))
+      `📜 [Found ${voiceMessages.length} voice messages in MongoDB] for room: ${roomId}`
     );
 
     if (voiceMessages.length === 0) {
@@ -685,9 +622,7 @@ export const getAllCompanyVoices = async (req, res) => {
     const messagesWithDetails = await Promise.all(
       voiceMessages.map(async (msg) => {
         if (!msg.voice || !msg.voice.s3Key) {
-          console.warn(`⚠️ [Invalid Voice Metadata] Message ID: ${msg._id}`, {
-            message: msg,
-          });
+          console.warn(`⚠️ [Invalid Voice Metadata] Message ID: ${msg._id}`);
           return null;
         }
 
@@ -726,10 +661,7 @@ export const getAllCompanyVoices = async (req, res) => {
             },
           };
 
-          console.log(
-            `📤 [Processed Voice Message]:`,
-            JSON.stringify(messageData)
-          );
+          console.log(`📤 [Processed Voice Message]:`, JSON.stringify(messageData));
           return messageData;
         } catch (s3Error) {
           console.error(

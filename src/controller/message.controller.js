@@ -11,6 +11,7 @@ export const handleSendMessage = async (socket, message, targetRoom) => {
 
   try {
     const user = socket.user;
+    console.log("sending user : ", user);
 
     if (!message || typeof message !== "string" || message.trim() === "") {
       console.warn("⚠️ [Validation Failed] Empty or invalid message");
@@ -203,82 +204,24 @@ export const handleDeleteMessage = async (socket, messageId, targetRoom) => {
   }
 };
 
-// Express middleware
 export const getLogginUser = async (req, res) => {
-  const db = getDB();
-  const userCollection = db.collection("users");
-  const employeeCollection = db.collection("admins");
-
   try {
-    let token = req.header("Authorization")?.replace("Bearer ", "");
-    if (!token && req.headers.cookie) {
-      const cookies = cookie.parse(req.headers.cookie);
-      token = cookies.token;
-    }
-
-    if (!token) {
+    // Check if req.user is set by authMiddleware
+    if (!req.user) {
+      console.warn("No authenticated user found in req.user");
       return res
         .status(401)
-        .json({ message: "No token provided, authorization denied" });
+        .json({ message: "No authenticated user, authorization denied" });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    let userId;
-    try {
-      userId = new ObjectId(decoded.userId);
-    } catch (error) {
-      return res
-        .status(401)
-        .json({ message: "Invalid user ID format in token" });
-    }
-
-    const userFromUsers = await userCollection.findOne(
-      { _id: userId },
-      { projection: { position: 1, firstName: 1, companyId: 1, email: 1 } }
-    );
-
-    const userFromEmployees = await employeeCollection.findOne(
-      { _id: userId },
-      { projection: { position: 1, firstName: 1, companyId: 1, email: 1 } }
-    );
-
-    const user = userFromUsers || userFromEmployees;
-
-    if (!user) {
-      return res.status(401).json({
-        message: "User not found in either collection, authorization denied",
-      });
-    }
-
-    if (
-      !["Employee", "CEO", "Manager", "HR", "Client", "TeamLeader"].includes(
-        user.position
-      )
-    ) {
-      return res.status(403).json({
-        message: "Access denied: User is not an employee, head, or manager",
-      });
-    }
-
-    req.user = {
-      userId: decoded.userId,
-      email: user.email,
-      companyId: user.companyId,
-      position: user.position,
-      firstName: user.firstName,
-    };
-
+    // Return the user data from req.user
+    console.log("Returning authenticated user data:", req.user);
     return res.status(200).json(req.user);
   } catch (error) {
-    console.error("Authentication error:", error.message);
-    if (error.name === "JsonWebTokenError") {
-      return res.status(401).json({ message: "Invalid token" });
-    }
-    if (error.name === "TokenExpiredError") {
-      return res.status(401).json({ message: "Token expired" });
-    }
-    res.status(500).json({ message: "Server error during authentication" });
+    console.error("Error in getLogginUser:", error.message, error.stack);
+    return res
+      .status(500)
+      .json({ message: "Server error while fetching user data" });
   }
 };
 
@@ -287,52 +230,75 @@ export const getUsersByCompany = async (req, res) => {
   const db = getDB();
   const userCollection = db.collection("users");
   const employeeCollection = db.collection("admins");
+  const clientCollection = db.collection("clients");
 
   try {
-    let token = req.header("Authorization")?.replace("Bearer ", "");
-    if (!token && req.headers.cookie) {
-      const cookies = cookie.parse(req.headers.cookie);
-      token = cookies.token;
-    }
-
-    if (!token) {
+    // Check if req.user is set by authMiddleware
+    if (!req.user) {
+      console.warn("No authenticated user found in req.user");
       return res
         .status(401)
-        .json({ message: "No token provided, authorization denied" });
+        .json({ message: "No authenticated user, authorization denied" });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // Restrict access to 'user' and 'admin' roles
+    if (req.user.role === "client") {
+      console.warn(`Access denied for client user: ${req.user.userId}`);
+      return res.status(403).json({
+        message: "Access denied: Clients cannot access this endpoint",
+      });
+    }
 
-    const companyId = new ObjectId(decoded.companyId);
+    // Get companyId from req.user
+    const companyId = new ObjectId(req.user.companyId);
+    if (!companyId) {
+      console.warn(`No companyId found for user: ${req.user.userId}`);
+      return res
+        .status(400)
+        .json({ message: "Invalid user data: companyId not found" });
+    }
+
+    // Define projection for user data
+    const projection = {
+      _id: 1,
+      firstName: 1,
+      name:1,
+      fullName:1,
+      email: 1,
+      position: 1,
+    };
 
     // Query users collection
     const usersFromUsers = await userCollection
-      .find(
-        { companyId: companyId },
-        { projection: { _id: 1, firstName: 1, email: 1, position: 1 } }
-      )
+      .find({ companyId }, { projection })
       .toArray();
 
     // Query admins collection
     const usersFromEmployees = await employeeCollection
-      .find(
-        { companyId: companyId },
-        { projection: { _id: 1, firstName: 1, email: 1, position: 1 } }
-      )
+      .find({ companyId }, { projection })
+      .toArray();
+
+    // Query clients collection
+    const usersFromClients = await clientCollection
+      .find({ companyId }, { projection })
       .toArray();
 
     // Combine and format results
-    const allUsers = [...usersFromUsers, ...usersFromEmployees].map((user) => ({
+    const allUsers = [
+      ...usersFromUsers.map((user) => ({ ...user, role: "user" })),
+      ...usersFromEmployees.map((user) => ({ ...user, role: "admin" })),
+      ...usersFromClients.map((user) => ({ ...user, role: "client" })),
+    ].map((user) => ({
       userId: user._id.toString(),
-      firstName: user.firstName || "Anonymous",
-      email: user.email,
-      position: user.position,
+      firstName: user.firstName || user.name || user.fullName|| "Anonymous",
+      email: user.email || null,
+      position: user.position || user.role || null,
+      role: user.role,
     }));
 
-    console.log("all users : ", allUsers);
-
     console.log(
-      `📋 [Users Fetched] Company ID: ${companyId}, Count: ${allUsers.length}`
+      `📋 [Users Fetched] Company ID: ${companyId}, Count: ${allUsers.length}`,
+      allUsers
     );
 
     return res.status(200).json({
@@ -340,7 +306,7 @@ export const getUsersByCompany = async (req, res) => {
       data: allUsers,
     });
   } catch (error) {
-    console.error("❌ [getUsersByCompany Error]:", error.message);
+    console.error("❌ [getUsersByCompany Error]:", error.message, error.stack);
     return res
       .status(500)
       .json({ message: "Server error while fetching users" });
@@ -381,11 +347,9 @@ export const getMessagesByRoom = async (req, res) => {
     const { roomId } = req.query;
     if (!roomId || typeof roomId !== "string" || roomId.trim() === "") {
       console.warn("⚠️ [Validation Failed] Invalid or missing roomId");
-      return res
-        .status(400)
-        .json({
-          message: "Room ID is required and must be a non-empty string",
-        });
+      return res.status(400).json({
+        message: "Room ID is required and must be a non-empty string",
+      });
     }
 
     // Check if the room exists and the user is a member
@@ -437,7 +401,6 @@ export const getMessagesByRoom = async (req, res) => {
       .json({ message: "Server error while fetching messages" });
   }
 };
-
 
 export const handleLeaveRoom = async (socket, roomId) => {
   const db = getDB();
@@ -491,10 +454,7 @@ export const handleLeaveRoom = async (socket, roomId) => {
       console.warn(
         `⚠️ [Validation Failed] Creator ${user.userId} cannot leave room ${roomId}`
       );
-      return socket.emit(
-        "errorMessage",
-        "Room creator cannot leave the room"
-      );
+      return socket.emit("errorMessage", "Room creator cannot leave the room");
     }
 
     // Remove user from room's user list
@@ -535,50 +495,40 @@ export const handleLeaveRoom = async (socket, roomId) => {
       roomId,
       roomName: room.roomName,
     });
-
   } catch (error) {
     console.error("❌ [handleLeaveRoom Error]:", error.message);
     socket.emit("errorMessage", "Server error while leaving room");
   }
 };
 
-
 export const handleDeleteRoom = async (req, res) => {
   try {
     console.log("📥 [Delete Room Request] Headers:", req.headers);
     console.log("📥 [Delete Room Request] Params:", req.params);
 
-    // Authenticate user
-    const cookieHeader = req.headers.cookie;
-    if (!cookieHeader) {
-      console.log("❌ No cookies sent");
-      return res.status(401).json({ error: "No cookies sent" });
-    }
-
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
-    if (!token) {
-      console.log("❌ Token missing");
-      return res.status(401).json({ error: "Token missing" });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      console.log("❌ Invalid token");
-      return res.status(401).json({ error: "Invalid token" });
+    // Check if req.user is set by authMiddleware
+    if (!req.user) {
+      console.warn("No authenticated user found in req.user");
+      return res
+        .status(401)
+        .json({ error: "No authenticated user, authorization denied" });
     }
 
     // Restrict to higher privilege roles
     const allowedRoles = ["CEO", "Manager", "HR"];
-    if (!allowedRoles.includes(decoded.position)) {
-      console.log("❌ Insufficient permissions:", decoded.position);
-      return res.status(403).json({ error: "Insufficient position permissions" });
+    if (!allowedRoles.includes(req.user.position)) {
+      console.warn(
+        `Insufficient permissions for user ${req.user.userId}: ${req.user.position}`
+      );
+      return res
+        .status(403)
+        .json({ error: "Insufficient position permissions" });
     }
 
     // Get roomId from URL parameter
     const { roomId } = req.params;
     if (!roomId) {
-      console.log("❌ No roomId provided");
+      console.warn("No roomId provided");
       return res.status(400).json({ error: "roomId is required" });
     }
 
@@ -588,40 +538,48 @@ export const handleDeleteRoom = async (req, res) => {
     // Verify room exists and user is authorized
     const room = await roomCollection.findOne({ roomId });
     if (!room) {
-      console.log("❌ Room not found:", roomId);
+      console.warn(`Room not found: ${roomId}`);
       return res.status(404).json({ error: "Room not found" });
     }
-    if (String(room.companyId) !== String(decoded.companyId)) {
-      console.log("❌ Unauthorized company access:", room.companyId);
+    if (String(room.companyId) !== String(req.user.companyId)) {
+      console.warn(
+        `Unauthorized company access for user ${req.user.userId}: ${room.companyId}`
+      );
       return res.status(403).json({ error: "Not authorized for this company" });
     }
 
     // Delete all S3 voice files for the room
-    const voiceDeletionResult = await deleteS3VoicesByRoom(decoded, roomId);
+    const voiceDeletionResult = await deleteS3VoicesByRoom(req.user, roomId);
     console.log(`✅ Room voice deletion result:`, voiceDeletionResult);
 
     // Delete all S3 files for the room
-    const fileDeletionResult = await deleteS3FilesByRoom(decoded, roomId);
+    const fileDeletionResult = await deleteS3FilesByRoom(req.user, roomId);
     console.log(`✅ Room file deletion result:`, fileDeletionResult);
 
     // Delete all messages for the room
     const messageCollection = db.collection("messages");
-    const messageDeletionResult = await messageCollection.deleteMany({ roomId });
-    console.log(`✅ Deleted ${messageDeletionResult.deletedCount} messages for room ${roomId}`);
+    const messageDeletionResult = await messageCollection.deleteMany({
+      roomId,
+    });
+    console.log(
+      `✅ Deleted ${messageDeletionResult.deletedCount} messages for room ${roomId}`
+    );
 
     // Delete the room from MongoDB
-    const deleteResult = await roomCollection.deleteOne({ roomId : roomId });
+    const deleteResult = await roomCollection.deleteOne({ roomId });
     if (deleteResult.deletedCount === 0) {
-      console.log("❌ Failed to delete room:", roomId);
-      return res.status(500).json({ error: "Failed to delete room from rooms collection" });
+      console.warn(`Failed to delete room: ${roomId}`);
+      return res
+        .status(500)
+        .json({ error: "Failed to delete room from rooms collection" });
     }
-    console.log("✅ Room deleted from rooms collection:", roomId);
+    console.log(`✅ Room deleted from rooms collection: ${roomId}`);
 
     // Emit Socket.IO event to notify clients
     const io = req.app.get("io");
     io.to(roomId).emit("roomDeleted", {
       roomId,
-      userId: decoded.userId,
+      userId: req.user.userId,
       timestamp: new Date().toISOString(),
     });
 
@@ -634,7 +592,7 @@ export const handleDeleteRoom = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ [Delete Room Error]:", error.message, error.stack);
-    res.status(500).json({
+    return res.status(500).json({
       error: `An unexpected error occurred while deleting the room: ${error.message}`,
     });
   }
@@ -642,23 +600,29 @@ export const handleDeleteRoom = async (req, res) => {
 
 export const getRooms = async (req, res) => {
   try {
-    const token = req.cookies.token;
-    if (!token) {
-      return res.status(401).json({ error: "Token missing" });
-    }
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      return res.status(401).json({ error: "Invalid token" });
+    // Check if req.user is set by authMiddleware
+    if (!req.user) {
+      console.warn("No authenticated user found in req.user");
+      return res
+        .status(401)
+        .json({ error: "No authenticated user, authorization denied" });
     }
 
     const db = getDB();
     const roomCollection = db.collection("rooms");
+
+    // Query rooms where the user is in the users array and companyId matches
     const rooms = await roomCollection
       .find({
-        users: decoded.userId,
-        companyId: new ObjectId(decoded.companyId),
+        users: req.user.userId,
+        companyId: new ObjectId(req.user.companyId),
       })
       .toArray();
+
+    console.log(
+      `📋 [Rooms Fetched] User ID: ${req.user.userId}, Company ID: ${req.user.companyId}, Count: ${rooms.length}`,
+      rooms
+    );
 
     res.status(200).json({
       success: true,
@@ -670,7 +634,9 @@ export const getRooms = async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error("Error fetching rooms:", error.message, error.stack);
-    res.status(500).json({ error: `Failed to fetch rooms: ${error.message}` });
+    console.error("❌ [Get Rooms Error]:", error.message, error.stack);
+    return res
+      .status(500)
+      .json({ error: `Failed to fetch rooms: ${error.message}` });
   }
 };

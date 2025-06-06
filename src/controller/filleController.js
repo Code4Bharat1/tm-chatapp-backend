@@ -5,13 +5,11 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
-  HeadObjectCommand, // Added
+  HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { fileURLToPath } from "url";
 import path from "path";
-import jwt from "jsonwebtoken";
-import cookie from "cookie";
 import { getDB } from "../services/db.js";
 import { ObjectId } from "mongodb";
 import dotenv from "dotenv";
@@ -69,11 +67,7 @@ export const uploadMiddleware = (req, res, next) => {
 
 export const uploadFile = async (req, res) => {
   try {
-    console.log("AWS_ACCESS_KEY_ID:", process.env.AWS_ACCESS_KEY_ID);
-    console.log("AWS_SECRET_ACCESS_KEY:", process.env.AWS_SECRET_ACCESS_KEY);
-    console.log("AWS_REGION:", process.env.AWS_REGION);
-    console.log("AWS_BUCKET_NAME:", process.env.AWS_BUCKET_NAME);
-
+    // Check AWS environment variables
     if (
       !process.env.AWS_ACCESS_KEY_ID ||
       !process.env.AWS_SECRET_ACCESS_KEY ||
@@ -89,26 +83,10 @@ export const uploadFile = async (req, res) => {
     console.log("📥 [Upload Request] Headers:", req.headers);
     console.log("📥 [Upload Request] Body:", req.body);
     console.log("📥 [Upload Request] File:", req.file);
+    console.log("📥 [Upload Request] User:", req.user);
 
-    const cookieHeader = req.headers.cookie;
-    if (!cookieHeader) {
-      console.log("❌ No cookies sent");
-      return res.status(401).json({ error: "No cookies sent" });
-    }
-
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
-    if (!token) {
-      console.log("❌ Token missing");
-      return res.status(401).json({ error: "Token missing" });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      console.log("❌ Invalid token");
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
+    // Use user data from authMiddleware
+    const user = req.user;
     const allowedRoles = [
       "Employee",
       "CEO",
@@ -117,8 +95,8 @@ export const uploadFile = async (req, res) => {
       "Client",
       "TeamLeader",
     ];
-    if (!allowedRoles.includes(decoded.position)) {
-      console.log("❌ Insufficient permissions:", decoded.position);
+    if (!allowedRoles.includes(user.position)) {
+      console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ error: "Insufficient position permissions" });
@@ -146,12 +124,12 @@ export const uploadFile = async (req, res) => {
 
     const db = getDB();
     const messageCollection = db.collection("messages");
-    const roomId = req.body.roomId || `company_${decoded.companyId}`;
+    const roomId = req.body.roomId || `company_${user.companyId}`;
     console.log("📤 [Uploading to room]:", roomId);
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
-      if (!room || !room.users.includes(decoded.userId)) {
+      if (!room || !room.users.includes(user.userId)) {
         console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
@@ -162,10 +140,10 @@ export const uploadFile = async (req, res) => {
     const fileMetadata = {
       _id: new ObjectId(),
       message: "File uploaded",
-      userId: decoded.userId,
-      username: decoded.firstName || "Anonymous",
+      userId: user.userId,
+      username: user.firstName || "Anonymous",
       roomId,
-      companyId: new ObjectId(decoded.companyId),
+      companyId: new ObjectId(user.companyId),
       timestamp: new Date(),
       file: {
         filename: filename,
@@ -221,26 +199,10 @@ export const downloadFile = async (req, res) => {
   try {
     console.log("📥 [Download Request] Headers:", req.headers);
     console.log("📥 [Download Request] Params:", req.params);
+    console.log("📥 [Download Request] User:", req.user);
 
-    const cookieHeader = req.headers.cookie;
-    if (!cookieHeader) {
-      console.log("❌ No cookies sent");
-      return res.status(401).json({ error: "No cookies sent" });
-    }
-
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
-    if (!token) {
-      console.log("❌ Token missing");
-      return res.status(401).json({ error: "Token missing" });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      console.log("❌ Invalid token");
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
+    // Use user data from authMiddleware
+    const user = req.user;
     const allowedRoles = [
       "Employee",
       "CEO",
@@ -249,8 +211,8 @@ export const downloadFile = async (req, res) => {
       "Client",
       "TeamLeader",
     ];
-    if (!allowedRoles.includes(decoded.position)) {
-      console.log("❌ Insufficient permissions:", decoded.position);
+    if (!allowedRoles.includes(user.position)) {
+      console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ error: "Insufficient position permissions" });
@@ -266,8 +228,8 @@ export const downloadFile = async (req, res) => {
     const messageCollection = db.collection("messages");
     const fileMetadata = await messageCollection.findOne({
       $or: [
-        { _id: fileID }, // If voiceId is the message _id
-        { "file.filename": fileID }, // If voiceId is the voice filename
+        { _id: fileID }, // If fileID is the message _id
+        { "file.filename": fileID }, // If fileID is the file filename
       ],
     });
 
@@ -280,7 +242,7 @@ export const downloadFile = async (req, res) => {
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
-      if (!room || !room.users.includes(decoded.userId)) {
+      if (!room || !room.users.includes(user.userId)) {
         console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
@@ -288,7 +250,7 @@ export const downloadFile = async (req, res) => {
       }
     } else if (
       roomId.startsWith("company_") &&
-      roomId !== `company_${decoded.companyId}`
+      roomId !== `company_${user.companyId}`
     ) {
       console.log("❌ Not authorized for company room:", roomId);
       return res
@@ -327,26 +289,10 @@ export const deleteFile = async (req, res) => {
   try {
     console.log("🗑️ [Delete Request] Headers:", req.headers);
     console.log("🗑️ [Delete Request] Params:", req.params);
+    console.log("🗑️ [Delete Request] User:", req.user);
 
-    const cookieHeader = req.headers.cookie;
-    if (!cookieHeader) {
-      console.log("❌ No cookies sent");
-      return res.status(401).json({ error: "No cookies sent" });
-    }
-
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
-    if (!token) {
-      console.log("❌ Token missing");
-      return res.status(401).json({ error: "Token missing" });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      console.log("❌ Invalid token");
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
+    // Use user data from authMiddleware
+    const user = req.user;
     const allowedRoles = [
       "Employee",
       "CEO",
@@ -355,8 +301,8 @@ export const deleteFile = async (req, res) => {
       "Client",
       "TeamLeader",
     ];
-    if (!allowedRoles.includes(decoded.position)) {
-      console.log("❌ Insufficient permissions:", decoded.position);
+    if (!allowedRoles.includes(user.position)) {
+      console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ error: "Insufficient position permissions" });
@@ -372,7 +318,7 @@ export const deleteFile = async (req, res) => {
     const messageCollection = db.collection("messages");
     const fileMetadata = await messageCollection.findOne({
       "file.filename": fileID,
-      companyId: new ObjectId(decoded.companyId),
+      companyId: new ObjectId(user.companyId),
     });
 
     if (!fileMetadata) {
@@ -384,7 +330,7 @@ export const deleteFile = async (req, res) => {
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
-      if (!room || !room.users.includes(decoded.userId)) {
+      if (!room || !room.users.includes(user.userId)) {
         console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
@@ -392,7 +338,7 @@ export const deleteFile = async (req, res) => {
       }
     } else if (
       roomId.startsWith("company_") &&
-      roomId !== `company_${decoded.companyId}`
+      roomId !== `company_${user.companyId}`
     ) {
       console.log("❌ Not authorized for company room:", roomId);
       return res
@@ -410,7 +356,7 @@ export const deleteFile = async (req, res) => {
 
     await messageCollection.deleteOne({
       "file.filename": fileID,
-      companyId: new ObjectId(decoded.companyId),
+      companyId: new ObjectId(user.companyId),
     });
 
     const io = req.app.get("io");
@@ -431,20 +377,28 @@ export const deleteFile = async (req, res) => {
   }
 };
 
-export const deleteS3FilesByRoom = async (user, roomId) => {
+export const deleteS3FilesByRoom = async (req, res) => {
   try {
-    console.log(
-      `🗑️ [Delete S3 Files By Room] roomId=${roomId}, userId=${user.userId}`
-    );
+    console.log("🗑️ [Delete S3 Files By Room] Headers:", req.headers);
+    console.log("🗑️ [Delete S3 Files By Room] Params:", req.params);
+    console.log("🗑️ [Delete S3 Files By Room] User:", req.user);
+
+    // Use user data from authMiddleware
+    const user = req.user;
+    const { roomId } = req.params;
 
     // Validate inputs
     if (!user || !user.userId || !user.companyId) {
-      throw new Error(
-        "User authentication required: missing userId or companyId"
-      );
+      console.log("❌ Missing user data");
+      return res
+        .status(401)
+        .json({ error: "User authentication required: missing userId or companyId" });
     }
     if (!roomId || typeof roomId !== "string" || roomId.trim() === "") {
-      throw new Error("Room ID is required and must be a non-empty string");
+      console.log("❌ Invalid roomId");
+      return res
+        .status(400)
+        .json({ error: "Room ID is required and must be a non-empty string" });
     }
 
     const db = getDB();
@@ -454,10 +408,14 @@ export const deleteS3FilesByRoom = async (user, roomId) => {
     // Verify room exists and belongs to user's company
     const room = await roomCollection.findOne({ roomId });
     if (!room) {
-      throw new Error(`Room not found: ${roomId}`);
+      console.log("❌ Room not found:", roomId);
+      return res.status(404).json({ error: `Room not found: ${roomId}` });
     }
     if (String(room.companyId) !== String(user.companyId)) {
-      throw new Error("User not authorized for this room's company");
+      console.log("❌ User not authorized for room:", roomId);
+      return res
+        .status(403)
+        .json({ error: "User not authorized for this room's company" });
     }
 
     // Fetch all messages with files for the room
@@ -487,17 +445,32 @@ export const deleteS3FilesByRoom = async (user, roomId) => {
       await s3.send(new DeleteObjectsCommand(deleteParams));
       deletedCount = fileKeys.length;
       console.log(`✅ Deleted ${deletedCount} S3 files for room ${roomId}`);
+
+      // Delete corresponding messages from MongoDB
+      await messageCollection.deleteMany({
+        roomId,
+        file: { $exists: true },
+      });
     } else {
       console.log(`No S3 files to delete for room ${roomId}`);
     }
 
-    return { success: true, deletedCount };
+    const io = req.app.get("io");
+    io.to(roomId).emit("filesDeleted", {
+      roomId,
+      message: `Deleted ${deletedCount} files`,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.status(200).json({ success: true, deletedCount });
   } catch (error) {
     console.error(
       `❌ [Delete S3 Files By Room Error]: ${error.message}`,
       error.stack
     );
-    throw error;
+    res.status(500).json({
+      error: `An unexpected error occurred while deleting files: ${error.message}`,
+    });
   }
 };
 
@@ -505,27 +478,10 @@ export const getFilesByRoom = async (req, res) => {
   try {
     console.log("📜 [Get Files Request] Headers:", req.headers);
     console.log("📜 [Get Files Request] Params:", req.params);
+    console.log("📜 [Get Files Request] User:", req.user);
 
-    // Authenticate user
-    const cookieHeader = req.headers.cookie;
-    if (!cookieHeader) {
-      console.log("❌ No cookies sent");
-      return res.status(401).json({ success: false, error: "No cookies sent" });
-    }
-
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
-    if (!token) {
-      console.log("❌ Token missing");
-      return res.status(401).json({ success: false, error: "Token missing" });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded) {
-      console.log("❌ Invalid token");
-      return res.status(401).json({ success: false, error: "Invalid token" });
-    }
-
+    // Use user data from authMiddleware
+    const user = req.user;
     const allowedRoles = [
       "Employee",
       "CEO",
@@ -534,8 +490,8 @@ export const getFilesByRoom = async (req, res) => {
       "Client",
       "TeamLeader",
     ];
-    if (!allowedRoles.includes(decoded.position)) {
-      console.log("❌ Insufficient permissions:", decoded.position);
+    if (!allowedRoles.includes(user.position)) {
+      console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ success: false, error: "Insufficient position permissions" });
@@ -555,7 +511,7 @@ export const getFilesByRoom = async (req, res) => {
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
-      if (!room || !room.users.includes(decoded.userId)) {
+      if (!room || !room.users.includes(user.userId)) {
         console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
@@ -566,7 +522,7 @@ export const getFilesByRoom = async (req, res) => {
       }
     } else if (
       roomId.startsWith("company_") &&
-      roomId !== `company_${decoded.companyId}`
+      roomId !== `company_${user.companyId}`
     ) {
       console.log("❌ Not authorized for company room:", roomId);
       return res
@@ -579,7 +535,7 @@ export const getFilesByRoom = async (req, res) => {
     const messages = await messageCollection
       .find({
         roomId,
-        companyId: new ObjectId(decoded.companyId),
+        companyId: new ObjectId(user.companyId),
       })
       .sort({ timestamp: -1 })
       .toArray();

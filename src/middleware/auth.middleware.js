@@ -1,73 +1,150 @@
-import jwt from "jsonwebtoken";
-import { ObjectId } from "mongodb";
-import { getDB } from "../services/db.js";
+import jwt from 'jsonwebtoken';
+import { ObjectId } from 'mongodb';
+import { parse } from 'cookie';
+import { getDB } from '../services/db.js'; // Adjust the path to your DB connection
 
-// Middleware to check logged-in user for group chat
-export const checkGroupChatAuth = async (req, res, next) => {
+const authMiddleware = async (req, res, next) => {
   const db = getDB();
   const userCollection = db.collection("users");
-  const employeeCollection = db.collection("employees"); // Second collection
+  const employeeCollection = db.collection("admins");
+  const clientCollection = db.collection("clients");
 
   try {
-    // Get token from Authorization header
-    const token = req.header("Authorization")?.replace("Bearer ", "");
+    let token = null;
+    let decoded = null;
+    let role = null;
+    let secret = null;
 
-    if (!token) {
+    // Check for cookies
+    if (!req.headers.cookie) {
+      console.warn("No cookies found in request headers");
       return res
         .status(401)
-        .json({ message: "No token provided, authorization denied" });
+        .json({ message: "No cookies provided, authorization denied" });
+    }
+
+    // Parse cookies
+    const cookies = parse(req.headers.cookie);
+    console.log("Cookies parsed:", cookies);
+
+    // Try tokens in order of priority
+    if (cookies.token) {
+      token = cookies.token;
+      secret = process.env.JWT_SECRET;
+      role = "user";
+    } else if (cookies.admintoken) {
+      token = cookies.admintoken;
+      secret = process.env.JWT_SECRET;
+      role = "admin";
+    } else if (cookies.clientToken) {
+      token = cookies.clientToken;
+      secret = process.env.JWT_SECRET;
+      role = "client";
+    } else {
+      console.warn("No recognized token found in cookies:", Object.keys(cookies));
+      return res
+        .status(401)
+        .json({ message: "No recognized token provided, authorization denied" });
+    }
+
+    // Validate token, role, and secret
+    if (!token || !role || !secret) {
+      console.warn("Token, role, or secret missing", { token: !!token, role, secret: !!secret });
+      return res
+        .status(401)
+        .json({ message: "Invalid token or role configuration, authorization denied" });
     }
 
     // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // Convert userId to ObjectId
-    let userId;
     try {
-      userId = new ObjectId(decoded.userId);
+      decoded = jwt.verify(token, secret);
+      console.log("Token decoded:", decoded);
     } catch (error) {
-      return res
-        .status(401)
-        .json({ message: "Invalid user ID format in token" });
+      console.error("Token verification error:", error.message);
+      return res.status(401).json({
+        message:
+          error.name === "TokenExpiredError"
+            ? "Token expired"
+            : "Invalid token",
+      });
     }
 
-    // Search for user in both collections
-    const userFromUsers = await userCollection.findOne(
-      { _id: userId },
-      { projection: { position: 1, firstName: 1, companyId: 1 } }
-    );
-
-    const userFromEmployees = await employeeCollection.findOne(
-      { _id: userId },
-      { projection: { position: 1, firstName: 1, companyId: 1 } }
-    );
-
-    // Combine results: prioritize users collection, fallback to employees
-    const user = userFromUsers || userFromEmployees;
-
-    if (!user) {
+    // Determine the user ID key
+    const idKey =
+      decoded.userId || decoded.clientId || decoded.adminId || decoded.id;
+    if (!idKey) {
+      console.warn("Invalid token structure, user ID not found", decoded);
       return res
-        .status(401)
-        .json({ message: "User not found in either collection, authorization denied" });
+        .status(400)
+        .json({ message: "Invalid token structure, user ID not found" });
     }
 
-    // Check if user is an employee, head, or manager
-    if (!["Employee", "Head", "Manager"].includes(user.role)) {
-      return res
-        .status(403)
-        .json({ message: "Access denied: User is not an employee, head, or manager" });
-    }
+    const userId = new ObjectId(idKey);
+    console.log(`Querying ${role} with ID: ${userId}`);
 
-    // Attach user to request object
-    req.user = {
-      _id: user._id.toString(), // Convert ObjectId to string
-      firstName: user.firstName || "Anonymous",
-      companyId: user.companyId ? user.companyId.toString() : null, // Ensure companyId is string
-      position: user.position,
+    // Define projection for user data
+    const projection = {
+      position: 1,
+      firstName: 1,
+      companyId: 1,
+      email: 1,
     };
+
+    // Fetch user based on role
+    let user = null;
+    switch (role) {
+      case "user":
+        user = await userCollection.findOne({ _id: userId }, { projection });
+        break;
+      case "admin":
+        user = await employeeCollection.findOne({ _id: userId }, { projection });
+        break;
+      case "client":
+        user = await clientCollection.findOne({ _id: userId }, { projection });
+        break;
+      default:
+        console.error(`Invalid role: ${role}`);
+        return res
+          .status(400)
+          .json({ message: "Invalid role, authorization denied" });
+    }
+
+    // Check if user exists
+    if (!user) {
+      console.warn(`User not found for ID: ${userId} with role: ${role}`);
+      return res
+        .status(401)
+        .json({ message: "User not found, authorization denied" });
+    }
+
+    // Attach user info to req.user
+    req.user = {
+      userId: idKey.toString(),
+      email: user.email || decoded.email || null,
+      companyId: user.companyId?.toString() || decoded.companyId || null,
+      position: user.position || decoded.position || null,
+      firstName: user.firstName || null,
+      name:user.name || null,
+      fullName:user.fullName||null,
+      companyName: decoded.companyName || null,
+      role,
+    };
+    console.log("User authenticated:", req.user);
+
+    // Final validation before proceeding
+    if (!req.user.role) {
+      console.error("req.user.role is not defined after setting", req.user);
+      return res
+        .status(500)
+        .json({ message: "Internal error: role not set" });
+    }
+
+    console.log("Proceeding to next middleware/controller");
     next();
   } catch (error) {
-    console.error("Authentication error:", error.message);
-    res.status(401).json({ message: "Invalid token or server error, authorization denied" });
+    console.error("Authentication error:", error.message, error.stack);
+    return res.status(500).json({ message: "Server error during authentication" });
   }
 };
+
+export default authMiddleware;

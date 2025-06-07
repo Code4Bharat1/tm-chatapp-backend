@@ -26,4 +26,3 @@ coverage/
 # Optional for build tools
 .build/
 .cache/
-.env

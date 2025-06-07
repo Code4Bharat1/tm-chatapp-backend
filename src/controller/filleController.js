@@ -377,28 +377,22 @@ export const deleteFile = async (req, res) => {
   }
 };
 
-export const deleteS3FilesByRoom = async (req, res) => {
+export const deleteS3FilesByRoom = async (adata) => {
   try {
-    console.log("🗑️ [Delete S3 Files By Room] Headers:", req.headers);
-    console.log("🗑️ [Delete S3 Files By Room] Params:", req.params);
-    console.log("🗑️ [Delete S3 Files By Room] User:", req.user);
-
-    // Use user data from authMiddleware
-    const user = req.user;
-    const { roomId } = req.params;
+    const { user, roomId } = adata;
+    console.log("🗑️ [Delete S3 Files By Room] User:", user);
+    console.log("🗑️ [Delete S3 Files By Room] Room ID:", roomId);
 
     // Validate inputs
     if (!user || !user.userId || !user.companyId) {
       console.log("❌ Missing user data");
-      return res
-        .status(401)
-        .json({ error: "User authentication required: missing userId or companyId" });
+      throw new Error(
+        "User authentication required: missing userId or companyId"
+      );
     }
     if (!roomId || typeof roomId !== "string" || roomId.trim() === "") {
       console.log("❌ Invalid roomId");
-      return res
-        .status(400)
-        .json({ error: "Room ID is required and must be a non-empty string" });
+      throw new Error("Room ID is required and must be a non-empty string");
     }
 
     const db = getDB();
@@ -409,13 +403,11 @@ export const deleteS3FilesByRoom = async (req, res) => {
     const room = await roomCollection.findOne({ roomId });
     if (!room) {
       console.log("❌ Room not found:", roomId);
-      return res.status(404).json({ error: `Room not found: ${roomId}` });
+      throw new Error(`Room not found: ${roomId}`);
     }
     if (String(room.companyId) !== String(user.companyId)) {
       console.log("❌ User not authorized for room:", roomId);
-      return res
-        .status(403)
-        .json({ error: "User not authorized for this room's company" });
+      throw new Error("User not authorized for this room's company");
     }
 
     // Fetch all messages with files for the room
@@ -442,8 +434,8 @@ export const deleteS3FilesByRoom = async (req, res) => {
         },
       };
       console.log("Deleting S3 files for room:", deleteParams);
-      await s3.send(new DeleteObjectsCommand(deleteParams));
-      deletedCount = fileKeys.length;
+      const result = await s3.send(new DeleteObjectsCommand(deleteParams));
+      deletedCount = result.Deleted ? result.Deleted.length : fileKeys.length;
       console.log(`✅ Deleted ${deletedCount} S3 files for room ${roomId}`);
 
       // Delete corresponding messages from MongoDB
@@ -455,22 +447,27 @@ export const deleteS3FilesByRoom = async (req, res) => {
       console.log(`No S3 files to delete for room ${roomId}`);
     }
 
-    const io = req.app.get("io");
-    io.to(roomId).emit("filesDeleted", {
-      roomId,
-      message: `Deleted ${deletedCount} files`,
-      timestamp: new Date().toISOString(),
-    });
+    // Emit socket event
+    const io = adata.io || (adata.app && adata.app.get("io")); // Access io from adata
+    if (io) {
+      io.to(roomId).emit("filesDeleted", {
+        roomId,
+        message: `Deleted ${deletedCount} files`,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      console.warn("Socket.io instance not found in adata");
+    }
 
-    res.status(200).json({ success: true, deletedCount });
+    return { success: true, deletedCount };
   } catch (error) {
     console.error(
       `❌ [Delete S3 Files By Room Error]: ${error.message}`,
       error.stack
     );
-    res.status(500).json({
-      error: `An unexpected error occurred while deleting files: ${error.message}`,
-    });
+    throw new Error(
+      `An unexpected error occurred while deleting files: ${error.message}`
+    );
   }
 };
 
@@ -513,12 +510,10 @@ export const getFilesByRoom = async (req, res) => {
       const room = await roomCollection.findOne({ roomId });
       if (!room || !room.users.includes(user.userId)) {
         console.log("❌ Not authorized for room:", roomId);
-        return res
-          .status(403)
-          .json({
-            success: false,
-            error: "Not authorized to access this room",
-          });
+        return res.status(403).json({
+          success: false,
+          error: "Not authorized to access this room",
+        });
       }
     } else if (
       roomId.startsWith("company_") &&
@@ -580,7 +575,9 @@ export const getFilesByRoom = async (req, res) => {
             username: message.username || "Anonymous",
             roomId: message.roomId,
             timestamp: message.timestamp.toISOString(),
-            updatedAt: message.updatedAt ? message.updatedAt.toISOString() : undefined,
+            updatedAt: message.updatedAt
+              ? message.updatedAt.toISOString()
+              : undefined,
           };
 
           if (fileData) {
@@ -591,7 +588,9 @@ export const getFilesByRoom = async (req, res) => {
           return messageData;
         } catch (s3Error) {
           console.error(
-            `❌ [S3 Error] Message ID: ${message._id}, File: ${message.file?.s3Key || "N/A"}`,
+            `❌ [S3 Error] Message ID: ${message._id}, File: ${
+              message.file?.s3Key || "N/A"
+            }`,
             s3Error.message
           );
           // Include text messages even if file validation fails
@@ -603,7 +602,9 @@ export const getFilesByRoom = async (req, res) => {
               username: message.username || "Anonymous",
               roomId: message.roomId,
               timestamp: message.timestamp.toISOString(),
-              updatedAt: message.updatedAt ? message.updatedAt.toISOString() : undefined,
+              updatedAt: message.updatedAt
+                ? message.updatedAt.toISOString()
+                : undefined,
             };
           }
           return null; // Skip invalid file messages

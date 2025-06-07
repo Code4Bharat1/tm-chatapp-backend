@@ -28,8 +28,9 @@ export const initializeSocket = (server, allowedOrigins) => {
   });
 
   // Socket.IO authentication middleware
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     try {
+      // Parse cookies from headers
       const cookieHeader = socket.handshake.headers.cookie;
       if (!cookieHeader) {
         console.error("No cookies sent");
@@ -37,6 +38,7 @@ export const initializeSocket = (server, allowedOrigins) => {
       }
 
       const cookies = cookie.parse(cookieHeader);
+      console.log("Parsed Cookies:", cookies);
       const tokens = {
         user: cookies.token,
         admin: cookies.admintoken,
@@ -46,12 +48,13 @@ export const initializeSocket = (server, allowedOrigins) => {
       let decoded = null;
       let role = null;
 
-      if (tokens.user) {
-        decoded = jwt.verify(tokens.user, process.env.JWT_SECRET);
-        role = "user";
-      } else if (tokens.admin) {
+      // Verify token based on type
+      if (tokens.admin) {
         decoded = jwt.verify(tokens.admin, process.env.JWT_SECRET);
         role = "admin";
+      } else if (tokens.user) {
+        decoded = jwt.verify(tokens.user, process.env.JWT_SECRET);
+        role = "user";
       } else if (tokens.client) {
         decoded = jwt.verify(tokens.client, process.env.JWT_SECRET);
         role = "client";
@@ -60,62 +63,119 @@ export const initializeSocket = (server, allowedOrigins) => {
         return next(new Error("Authentication token missing"));
       }
 
+      // Validate decoded token
+      if (!decoded) {
+        console.error("Invalid token: No decoded data");
+        return next(new Error("Invalid token"));
+      }
+
+      // Determine the user ID key
+      const idKey =
+        decoded.userId || decoded.clientId || decoded.adminId || decoded.id;
+      if (!idKey) {
+        console.error("Invalid token structure, user ID not found", decoded);
+        return next(new Error("Invalid token structure, user ID not found"));
+      }
+
+      const userId = new ObjectId(idKey);
+      console.log(`Querying ${role} with ID: ${userId}`);
+
+      // Access database
+      const db = getDB();
+      const userCollection = db.collection("users");
+      const employeeCollection = db.collection("admins");
+      const clientCollection = db.collection("clients");
+
+      // Define projection for user data
+      const projection = {
+        position: 1,
+        firstName: 1,
+        name: 1, // Include name for clients
+        companyId: 1,
+        email: 1,
+      };
+
+      // Fetch user based on role
+      let user = null;
+      switch (role) {
+        case "user":
+          user = await userCollection.findOne({ _id: userId }, { projection });
+          break;
+        case "admin":
+          user = await employeeCollection.findOne(
+            { _id: userId },
+            { projection }
+          );
+          break;
+        case "client":
+          user = await clientCollection.findOne(
+            { _id: userId },
+            { projection }
+          );
+          break;
+        default:
+          console.error(`Invalid role: ${role}`);
+          return next(new Error("Invalid role, authorization denied"));
+      }
+
+      // Check if user exists
+      if (!user) {
+        console.warn(`User not found for ID: ${userId} with role: ${role}`);
+        return next(new Error("User not found, authorization denied"));
+      }
+
+      // Normalize position
+      const normalizedPosition =
+        user.position?.toLowerCase() || decoded.position?.toLowerCase();
       const allowedRoles = [
-        "Employee",
-        "CEO",
-        "Manager",
-        "HR",
-        "Client",
-        "TeamLeader",
+        "employee",
+        "ceo",
+        "manager",
+        "hr",
+        "client",
+        "teamleader",
+        "admin",
       ];
-
-      if (!decoded || !allowedRoles.includes(decoded.position)) {
-        console.error("Invalid or unauthorized token");
+      if (!normalizedPosition || !allowedRoles.includes(normalizedPosition)) {
+        console.error(
+          "Invalid or unauthorized position:",
+          user.position || decoded.position
+        );
         return next(
-          new Error("Authorization error: Invalid or unauthorized token")
+          new Error("Authorization error: Invalid or unauthorized role")
         );
       }
 
-      // Attach decoded payload and role
-      socket.user = decoded;
-      socket.user.role = role;
+      // Initialize socket.user
+      socket.user = {
+        userId: idKey.toString(),
+        email: user.email || decoded.email || null,
+        companyId: user.companyId?.toString() || decoded.companyId || null,
+        position: normalizedPosition,
+        firstName:
+          user.firstName || (role === "client" ? user.name : null) || null,
+        companyName: decoded.companyName || null,
+        role,
+      };
 
-      // Assign the proper ID based on role and also normalize to userId for event handlers
+      // Normalize ID based on role
       if (role === "admin") {
-        const idValue = decoded.adminId || decoded.userId || decoded.id;
-        socket.user.adminId = idValue;
-        socket.user.userId = idValue; // normalize so downstream code can use userId
-      } else if (
-        ["Employee", "CEO", "Manager", "HR", "Client", "TeamLeader"].includes(
-          decoded.position
-        )
-      ) {
-        const idValue = decoded.userId || decoded.id;
-        socket.user.userId = idValue;
-      } else if (role === "client") {
-        const idValue = decoded.clientId || decoded.userId || decoded.id;
-        socket.user.clientId = idValue;
-        socket.user.userId = idValue; // normalize so downstream code can use userId
-      }
-
-      if (role === "admin") {
-        console.log(`👑 [Admin Authenticated] ID: ${socket.user.adminId}`);
+        socket.user.adminId = idKey.toString();
+        socket.user.userId = idKey.toString(); // Normalize to userId
       } else if (role === "user") {
-        console.log(`✅ [User Authenticated] ID: ${socket.user.userId}`);
+        socket.user.userId = idKey.toString();
       } else if (role === "client") {
-        console.log(
-          `✅ [Client Authenticated] Role: ${role}, ID: ${socket.user.clientId}`
-        );
-      } else {
-        console.log(
-          `⚠️ [Unknown Role] Role: ${role}, ID: ${socket.user.userId}`
-        );
+        socket.user.clientId = idKey.toString();
+        socket.user.userId = idKey.toString(); // Normalize to userId
       }
 
+      console.log(
+        `Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}, FirstName=${socket.user.firstName}`
+      );
       next();
     } catch (error) {
-      console.error("❌ [Socket Authentication Error]:", error.message);
-      next(new Error("Authentication error"));
+      console.error("Socket Authentication Error:", error.name, error.message);
+      next(new Error(`Authentication error: ${error.message}`));
     }
   });
 
@@ -124,8 +184,9 @@ export const initializeSocket = (server, allowedOrigins) => {
     const roomCollection = db.collection("rooms");
     const userCollection = db.collection("users");
     const employeeCollection = db.collection("admins");
-    const clientCollection = db.collection("clients")
+    const clientCollection = db.collection("clients");
     const messageCollection = db.collection("messages");
+    const companyCollection = db.collection("companies");
     let userId = null;
     if (socket.user.role === "user") {
       userId = socket.user.userId;
@@ -158,7 +219,7 @@ export const initializeSocket = (server, allowedOrigins) => {
           socket.emit("roomCreated", {
             roomId: room.roomId,
             roomName: room.roomName,
-            users: room.users,
+            users: socket.user.role === "client" ? [] : room.users,
             creator: room.creator,
           });
           console.log(`📤 [Room Emitted] ${room.roomId} for ${userId}`);
@@ -180,104 +241,99 @@ export const initializeSocket = (server, allowedOrigins) => {
     }
 
     async function validateCompanyUsers(userIds) {
+      console.log("Validating user IDs:", userIds, "for companyId:", companyId);
+      // Ensure all userIds are strings and convert to ObjectId for querying
+      const validObjectIds = userIds
+        .filter((id) => typeof id === "string" && ObjectId.isValid(id))
+        .map((id) => new ObjectId(id));
+
+      if (validObjectIds.length !== userIds.length) {
+        console.error("Some user IDs are invalid:", {
+          invalidUserIds: userIds.filter(
+            (id) => !ObjectId.isValid(id) || typeof id !== "string"
+          ),
+        });
+        return [];
+      }
+
+      // Query all relevant collections
       const validUsers = await userCollection
         .find({
-          _id: { $in: userIds.map((id) => new ObjectId(id)) },
+          _id: { $in: validObjectIds },
           companyId: new ObjectId(companyId),
         })
         .toArray();
+      console.log(
+        "Valid users from database:",
+        validUsers.map((u) => u._id.toString())
+      );
 
       const validEmployees = await employeeCollection
         .find({
-          _id: { $in: userIds.map((id) => new ObjectId(id)) },
+          _id: { $in: validObjectIds },
           companyId: new ObjectId(companyId),
         })
         .toArray();
-      const validateClient = await clientCollection
-        .find({
-          _id: { $in: userIds.map((id) => new ObjectId(id)) },
-          companyId: new ObjectId(companyId),
-        })
-        .toArray();
+      console.log(
+        "Valid employees from database:",
+        validEmployees.map((u) => u._id.toString())
+      );
 
-      return [...validUsers, ...validEmployees].map((u) => u._id.toString());
+      const validClients = await clientCollection
+        .find({
+          _id: { $in: validObjectIds },
+          companyId: new ObjectId(companyId),
+        })
+        .toArray();
+      console.log(
+        "Valid clients from database:",
+        validClients.map((u) => u._id.toString())
+      );
+
+      // Combine all valid user IDs from the three collections
+      const validUserIds = [
+        ...validUsers,
+        ...validEmployees,
+        ...validClients,
+      ].map((u) => u._id.toString());
+
+      console.log("All valid user IDs:", validUserIds);
+      return validUserIds; // Return the combined list of valid IDs
     }
 
-    socket.on("sendMessage", async (message , currentRoom ) => {
-      console.log("currentRoom : " , currentRoom)
-      const roomId = Array.from(socket.rooms).find((room)=>room.startsWith("room_")) || companyRoom
-      console.log("room ID : " , roomId)
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) {
-        return socket.emit("errorMessage", "Unauthorized room access.");
-      }
-      try {
-        await handleSendMessage(socket, message, currentRoom);
-      } catch (err) {
-        console.error("❌ [sendMessage Error]:", err.message);
-        socket.emit("errorMessage", "Error sending message.");
-      }
-    });
-
-    socket.on("editMessage", async ({ messageId, newMessage , currentRoom }) => {
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) {
-        return socket.emit("errorMessage", "Unauthorized edit attempt.");
-      }
-      try {
-        await handleEditMessage(socket, { messageId, newMessage }, currentRoom);
-      } catch (err) {
-        console.error("❌ [editMessage Error]:", err.message);
-        socket.emit("errorMessage", "Error editing message.");
-      }
-    });
-
-    socket.on("deleteMessage", async (messageId , currentRoom) => {
-      const roomId = Array.from(socket.rooms).find((room)=>room.startsWith("room_")) || companyRoom;
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) {
-        return socket.emit("errorMessage", "Unauthorized delete attempt.");
-      }
-      try {
-        await handleDeleteMessage(socket, messageId, currentRoom);
-      } catch (err) {
-        console.error("❌ [deleteMessage Error]:", err.message);
-        socket.emit("errorMessage", "Error deleting message.");
-      }
-    });
-
-    socket.on("typing", (currentRoom) => {
-      const roomId =currentRoom;
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) return;
-      socket.to(roomId).emit("userTyping", {
-        userId,
-        username: socket.user.firstName || "Anonymous",
-        roomId,
-      });
-    });
-
-    socket.on("stopTyping", (currentRoom) => {
-      const roomId =currentRoom;
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) return;
-      socket.to(roomId).emit("userStoppedTyping", {
-        userId,
-        roomId,
-      });
-    });
-
     socket.on("createRoom", async ({ roomName, userIds }) => {
+      console.log(
+        `Create Room Attempt: userId=${userId}, role=${socket.user.role}, roomName=${roomName}, userIds=`,
+        userIds
+      );
+
       if (
         !roomName?.trim() ||
         !Array.isArray(userIds) ||
         userIds.length === 0
       ) {
+        console.error("Invalid room name or users:", { roomName, userIds });
         return socket.emit("errorMessage", "Invalid room name or users.");
       }
 
-      console.log("user IDs : ", userIds)
-
       const validUserIds = await validateCompanyUsers(userIds);
-      if (validUserIds.length !== userIds.length) {
+      console.log("Validation result:", {
+        inputUserIds: userIds,
+        validUserIds,
+      });
+
+      // Check if all provided userIds are valid
+      const invalidUserIds = userIds.filter((id) => !validUserIds.includes(id));
+      if (invalidUserIds.length > 0) {
+        console.error(
+          "Validation failed: Some users do not belong to company",
+          {
+            invalidUserIds,
+          }
+        );
         return socket.emit(
           "errorMessage",
-          "Users must belong to your company."
+          "Some users do not belong to your company."
         );
       }
 
@@ -303,23 +359,39 @@ export const initializeSocket = (server, allowedOrigins) => {
       socket.join(roomId);
 
       allUserIds.forEach((uid) => {
-        io.to(uid).emit("roomCreated", {
-          roomId,
-          roomName,
-          users: allUserIds,
-          creator: userId,
-        });
+        const targetSocket = Array.from(io.sockets.sockets.values()).find(
+          (s) => s.user?.userId === uid
+        );
+        if (targetSocket) {
+          io.to(targetSocket.id).emit("roomCreated", {
+            roomId,
+            roomName,
+            users: targetSocket.user.role === "client" ? [] : allUserIds,
+            creator: userId,
+          });
+          console.log(
+            `📤 [roomCreated Emitted] to user ${uid} (role=${targetSocket.user.role})`
+          );
+        }
       });
 
-      io.sockets.sockets.forEach((client) => {
-        if (allUserIds.includes(client.user?.userId)) client.join(roomId);
-      });
+      console.log(
+        "Checking connected sockets for room join:",
+        io.sockets.sockets.size
+      );
+      for (const [socketId, client] of io.sockets.sockets) {
+        if (allUserIds.includes(client.user?.userId)) {
+          client.join(roomId);
+          console.log(`Socket ${socketId} joined room ${roomId}`);
+        }
+      }
 
       const systemMsg = {
         _id: new ObjectId().toString(),
         message: `Room "${roomName}" has been created!`,
         userId: "system",
         username: "System",
+        companyName: "System",
         roomId,
         companyId,
         timestamp: new Date().toISOString(),
@@ -331,11 +403,142 @@ export const initializeSocket = (server, allowedOrigins) => {
         timestamp: new Date(systemMsg.timestamp),
       });
       io.to(roomId).emit("newMessage", systemMsg);
+
+      console.log(`Room Created: roomId=${roomId}, users=`, allUserIds);
+    });
+    socket.on("sendMessage", async (message, currentRoom) => {
+      console.log(
+        "sendMessage: currentRoom:",
+        currentRoom,
+        "message:",
+        message
+      );
+      const roomId = currentRoom || getActiveRoom();
+      console.log("sendMessage: roomId:", roomId);
+
+      if (roomId !== companyRoom && !isUserInRoom(roomId)) {
+        console.error(
+          `Unauthorized room access: userId=${userId}, roomId=${roomId}`
+        );
+        return socket.emit("errorMessage", "Unauthorized room access.");
+      }
+
+      try {
+        // Save message and get the saved message object
+        const savedMessage = await handleSendMessage(socket, message, roomId);
+        if (!savedMessage) {
+          throw new Error("handleSendMessage returned no message");
+        }
+
+        // Construct message versions
+        const baseMessage = {
+          _id: savedMessage._id,
+          userId: savedMessage.userId,
+          username: savedMessage.username,
+          message: savedMessage.message,
+          roomId: savedMessage.roomId,
+          companyId: savedMessage.companyId.toString(),
+          timestamp: savedMessage.timestamp,
+          companyName: savedMessage.companyName,
+        };
+        const clientMessage = {
+          ...baseMessage,
+          username:
+            socket.user.role === "client"
+              ? savedMessage.username
+              : savedMessage.companyName,
+        };
+
+        // Emit appropriate message version to each user in the room
+        console.log(
+          `Emitting newMessage for roomId=${roomId}, sender userId=${userId}, role=${socket.user.role}`
+        );
+        for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
+          const client = io.sockets.sockets.get(socketId);
+          if (client) {
+            const messageToEmit =
+              client.user.role === "client" ? clientMessage : baseMessage;
+            client.emit("newMessage", messageToEmit);
+            console.log(
+              `Emitted newMessage to socket ${socketId} (role=${client.user.role}): username=${messageToEmit.username}`
+            );
+          }
+        }
+      } catch (err) {
+        console.error("❌ [sendMessage Error]:", err.message);
+        socket.emit("errorMessage", "Error sending message.");
+      }
+    });
+
+    socket.on("editMessage", async ({ messageId, newMessage, currentRoom }) => {
+      const roomId = currentRoom;
+      console.log("editMessage: roomId:", roomId);
+      if (roomId !== companyRoom && !isUserInRoom(roomId)) {
+        console.error(
+          `Unauthorized edit attempt: userId=${userId}, roomId=${roomId}`
+        );
+        return socket.emit("errorMessage", "Unauthorized edit attempt.");
+      }
+      try {
+        await handleEditMessage(socket, { messageId, newMessage }, currentRoom);
+      } catch (err) {
+        console.error("❌ [editMessage Error]:", err.message);
+        socket.emit("errorMessage", "Error editing message.");
+      }
+    });
+
+    socket.on("deleteMessage", async (messageId, currentRoom) => {
+      const roomId = currentRoom || getActiveRoom();
+      console.log("deleteMessage: roomId:", roomId);
+      if (roomId !== companyRoom && !isUserInRoom(roomId)) {
+        console.error(
+          `Unauthorized delete attempt: userId=${userId}, roomId=${roomId}`
+        );
+        return socket.emit("errorMessage", "Unauthorized delete attempt.");
+      }
+      try {
+        await handleDeleteMessage(socket, messageId, currentRoom);
+      } catch (err) {
+        console.error("❌ [deleteMessage Error]:", err.message);
+        socket.emit("errorMessage", "Error deleting message.");
+      }
+    });
+
+    socket.on("typing", (currentRoom) => {
+      const roomId = currentRoom;
+      if (roomId !== companyRoom && !isUserInRoom(roomId)) return;
+      // Emit userTyping only to non-client users in the room
+      for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
+        const client = io.sockets.sockets.get(socketId);
+        if (client && client.user.role !== "client") {
+          client.emit("userTyping", {
+            userId,
+            username: socket.user.firstName || "Anonymous",
+            roomId,
+          });
+          console.log(
+            `📤 [userTyping Emitted] to socket ${socketId} (role=${client.user.role})`
+          );
+        }
+      }
+    });
+
+    socket.on("stopTyping", (currentRoom) => {
+      const roomId = currentRoom;
+      if (roomId !== companyRoom && !isUserInRoom(roomId)) return;
+      socket.to(roomId).emit("userStoppedTyping", {
+        userId,
+        roomId,
+      });
     });
 
     socket.on("joinRoom", (roomId) => {
       const room = rooms.get(roomId);
       if (!room || !room.users.includes(userId)) {
+        console.error(
+          `Join Room Failed: userId=${userId}, roomId=${roomId}, roomUsers=`,
+          room?.users
+        );
         return socket.emit(
           "errorMessage",
           "Unauthorized or non-existent room."
@@ -353,17 +556,63 @@ export const initializeSocket = (server, allowedOrigins) => {
       });
 
       const onlineUsers = [...onlineUsersByRoom.get(roomId).values()];
+      console.log(
+        `Online Users Update for roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
+      );
 
+      // Emit to the joining user
       socket.emit("joinConfirmation", {
         room: roomId,
         roomName: room.roomName,
-        users: onlineUsers,
+        users: socket.user.role === "client" ? [] : onlineUsers,
       });
-      socket.to(roomId).emit("userJoined", {
-        user: { userId, username: socket.user.firstName || "Anonymous" },
-        roomId,
-      });
-      io.to(roomId).emit("onlineUsersUpdate", { users: onlineUsers, roomId });
+
+      // Emit userJoined only to non-client users in the room
+      for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
+        const client = io.sockets.sockets.get(socketId);
+        if (
+          client &&
+          client.user.role !== "client" &&
+          client.user.userId !== userId
+        ) {
+          client.emit("userJoined", {
+            user: { userId, username: socket.user.firstName || "Anonymous" },
+            roomId,
+          });
+          console.log(
+            `📤 [userJoined Emitted] to socket ${socketId} (role=${client.user.role})`
+          );
+        }
+      }
+
+      // Emit online users update to all users in the room
+      console.log(
+        `Checking sockets in room ${roomId}:`,
+        io.sockets.adapter.rooms.get(roomId)?.size || 0
+      );
+      for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
+        const client = io.sockets.sockets.get(socketId);
+        if (client) {
+          if (client.user.role === "client") {
+            client.emit("onlineUsersUpdate", {
+              userCount: onlineUsers.length,
+              roomId,
+            });
+            console.log(
+              `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
+            );
+          } else {
+            client.emit("onlineUsersUpdate", {
+              users: onlineUsers,
+              roomId,
+            });
+            console.log(
+              `Emitted users to non-client socket ${socketId}: users=`,
+              onlineUsers
+            );
+          }
+        }
+      }
     });
 
     socket.on("leaveRoom", async (roomId) => {
@@ -383,7 +632,38 @@ export const initializeSocket = (server, allowedOrigins) => {
       if (onlineUsersByRoom.has(roomId)) {
         onlineUsersByRoom.get(roomId).delete(userId);
         const onlineUsers = [...onlineUsersByRoom.get(roomId).values()];
-        io.to(roomId).emit("onlineUsersUpdate", { users: onlineUsers, roomId });
+        console.log(
+          `Online Users Update after leave: roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
+        );
+
+        // Emit online users update to all users in the room
+        console.log(
+          `Checking sockets in room ${roomId}:`,
+          io.sockets.adapter.rooms.get(roomId)?.size || 0
+        );
+        for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
+          const client = io.sockets.sockets.get(socketId);
+          if (client) {
+            if (client.user.role === "client") {
+              client.emit("onlineUsersUpdate", {
+                userCount: onlineUsers.length,
+                roomId,
+              });
+              console.log(
+                `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
+              );
+            } else {
+              client.emit("onlineUsersUpdate", {
+                users: onlineUsers,
+                roomId,
+              });
+              console.log(
+                `Emitted users to non-client socket ${socketId}: users=`,
+                onlineUsers
+              );
+            }
+          }
+        }
       }
     });
 
@@ -398,10 +678,38 @@ export const initializeSocket = (server, allowedOrigins) => {
         if (users.has(userId)) {
           users.delete(userId);
           const onlineUsers = [...users.values()];
-          io.to(roomId).emit("onlineUsersUpdate", {
-            users: onlineUsers,
-            roomId,
-          });
+          console.log(
+            `Online Users Update after disconnect: roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
+          );
+
+          // Emit online users update to all users in the room
+          console.log(
+            `Checking sockets in room ${roomId}:`,
+            io.sockets.adapter.rooms.get(roomId)?.size || 0
+          );
+          for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
+            const client = io.sockets.sockets.get(socketId);
+            if (client) {
+              if (client.user.role === "client") {
+                client.emit("onlineUsersUpdate", {
+                  userCount: onlineUsers.length,
+                  roomId,
+                });
+                console.log(
+                  `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
+                );
+              } else {
+                client.emit("onlineUsersUpdate", {
+                  users: onlineUsers,
+                  roomId,
+                });
+                console.log(
+                  `Emitted users to non-client socket ${socketId}: users=`,
+                  onlineUsers
+                );
+              }
+            }
+          }
         }
       });
     });

@@ -8,31 +8,39 @@ import { deleteS3VoicesByRoom } from "./voiceController.js";
 export const handleSendMessage = async (socket, message, targetRoom) => {
   const db = getDB();
   const messageCollection = db.collection("messages");
+  const companyCollection = db.collection("companyregistrations");
 
   try {
     const user = socket.user;
-    console.log("sending user : ", user);
+    console.log("sending user:", user);
 
     if (!message || typeof message !== "string" || message.trim() === "") {
       console.warn("⚠️ [Validation Failed] Empty or invalid message");
-      return socket.emit(
-        "errorMessage",
-        "Message is required and must be a non-empty string"
-      );
+      throw new Error("Message is required and must be a non-empty string");
     }
 
     if (!targetRoom || typeof targetRoom !== "string") {
       console.warn("⚠️ [Validation Failed] Invalid or missing target room");
-      return socket.emit("errorMessage", "Target room is required");
+      throw new Error("Target room is required");
     }
+
+    // Fetch company name from companyInfo.companyName
+    const company = await companyCollection.findOne({
+      _id: new ObjectId(user.companyId),
+    });
+    const companyName = company?.companyInfo?.companyName || "Unknown Company";
+    console.log(
+      `Fetched company name: ${companyName} for companyId: ${user.companyId}`
+    );
 
     const formattedMessage = {
       userId: user.userId,
       username: user.firstName || "Anonymous",
+      companyName, // Store company name
       message: message.trim(),
       timestamp: new Date(),
-      companyId: user.companyId,
-      roomId: targetRoom, // Store the room ID (company room or specific room)
+      companyId: new ObjectId(user.companyId),
+      roomId: targetRoom,
     };
 
     const savedMessage = await messageCollection.insertOne(formattedMessage);
@@ -40,20 +48,19 @@ export const handleSendMessage = async (socket, message, targetRoom) => {
     console.log(
       `💾 [Message Saved] ID: ${savedMessage.insertedId}, Room: ${targetRoom}`
     );
-    console.log(`📤 [Broadcasting Message] to room: ${targetRoom}`);
 
-    const messageToSend = {
+    return {
       ...formattedMessage,
       _id: savedMessage.insertedId.toString(),
       timestamp: formattedMessage.timestamp.toISOString(),
     };
-
-    // Send to everyone in the target room, including sender
-    socket.to(targetRoom).emit("newMessage", messageToSend);
-    socket.emit("newMessage", messageToSend);
   } catch (error) {
     console.error("❌ [handleSendMessage Error]:", error.message);
-    socket.emit("errorMessage", "Server error while sending message");
+    socket.emit(
+      "errorMessage",
+      error.message || "Server error while sending message"
+    );
+    throw error;
   }
 };
 
@@ -214,9 +221,15 @@ export const getLogginUser = async (req, res) => {
         .json({ message: "No authenticated user, authorization denied" });
     }
 
-    // Return the user data from req.user
-    console.log("Returning authenticated user data:", req.user);
-    return res.status(200).json(req.user);
+    // Normalize firstName: use firstName, fall back to name for clients, then null
+    const normalizedUser = {
+      ...req.user,
+      firstName: req.user.firstName || req.user.name || null,
+    };
+
+    // Return the normalized user data
+    console.log("Returning authenticated user data:", normalizedUser);
+    return res.status(200).json(normalizedUser);
   } catch (error) {
     console.error("Error in getLogginUser:", error.message, error.stack);
     return res
@@ -241,11 +254,14 @@ export const getUsersByCompany = async (req, res) => {
         .json({ message: "No authenticated user, authorization denied" });
     }
 
-    // Restrict access to 'user' and 'admin' roles
+    // Return empty array for client role without error
     if (req.user.role === "client") {
-      console.warn(`Access denied for client user: ${req.user.userId}`);
-      return res.status(403).json({
-        message: "Access denied: Clients cannot access this endpoint",
+      console.log(
+        `Client user ${req.user.userId} requested users; returning empty list`
+      );
+      return res.status(200).json({
+        success: true,
+        data: [],
       });
     }
 
@@ -262,8 +278,8 @@ export const getUsersByCompany = async (req, res) => {
     const projection = {
       _id: 1,
       firstName: 1,
-      name:1,
-      fullName:1,
+      name: 1,
+      fullName: 1,
       email: 1,
       position: 1,
     };
@@ -290,7 +306,7 @@ export const getUsersByCompany = async (req, res) => {
       ...usersFromClients.map((user) => ({ ...user, role: "client" })),
     ].map((user) => ({
       userId: user._id.toString(),
-      firstName: user.firstName || user.name || user.fullName|| "Anonymous",
+      firstName: user.firstName || user.name || user.fullName || "Anonymous",
       email: user.email || null,
       position: user.position || user.role || null,
       role: user.role,
@@ -317,31 +333,13 @@ export const getMessagesByRoom = async (req, res) => {
   const db = getDB();
   const messageCollection = db.collection("messages");
   const roomCollection = db.collection("rooms");
+  const userCollection = db.collection("users");
+  const employeeCollection = db.collection("admins");
+  const clientCollection = db.collection("clients");
 
   try {
-    // Authenticate user
-    let token = req.header("Authorization")?.replace("Bearer ", "");
-    if (!token && req.headers.cookie) {
-      const cookies = cookie.parse(req.headers.cookie);
-      token = cookies.token;
-    }
-
-    if (!token) {
-      console.warn("⚠️ [Validation Failed] No token provided");
-      return res
-        .status(401)
-        .json({ message: "No token provided, authorization denied" });
-    }
-
-    let decoded;
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (error) {
-      console.warn("⚠️ [Validation Failed] Invalid or expired token");
-      return res.status(401).json({ message: "Invalid or expired token" });
-    }
-
-    const userId = decoded.userId;
+    // Authentication is handled by authMiddleware, so req.user should be populated
+    const userId = req.user.userId;
 
     // Validate roomId
     const { roomId } = req.query;
@@ -368,6 +366,32 @@ export const getMessagesByRoom = async (req, res) => {
         .json({ message: "You are not authorized to access this room" });
     }
 
+    // Fetch user role
+    let role = null;
+    const user = await userCollection.findOne({ _id: new ObjectId(userId) });
+    if (user) {
+      role = "user";
+    } else {
+      const employee = await employeeCollection.findOne({
+        _id: new ObjectId(userId),
+      });
+      if (employee) {
+        role = "admin";
+      } else {
+        const client = await clientCollection.findOne({
+          _id: new ObjectId(userId),
+        });
+        if (client) {
+          role = "client";
+        }
+      }
+    }
+
+    if (!role) {
+      console.warn(`⚠️ [Validation Failed] User not found: ${userId}`);
+      return res.status(404).json({ message: "User not found" });
+    }
+
     // Fetch messages for the room, sorted by timestamp
     const messages = await messageCollection
       .find({ roomId })
@@ -375,20 +399,31 @@ export const getMessagesByRoom = async (req, res) => {
       .toArray();
 
     console.log(
-      `📋 [Messages Fetched] Room ID: ${roomId}, Count: ${messages.length}`
+      `📋 [Messages Fetched] Room ID: ${roomId}, Count: ${messages.length}, User: ${userId}, Role: ${role}`
     );
 
     // Format messages for frontend
-    const formattedMessages = messages.map((msg) => ({
-      _id: msg._id.toString(),
-      userId: msg.userId ? msg.userId.toString() : "unknown",
-      username: msg.username || "Anonymous",
-      message: msg.message,
-      roomId: msg.roomId,
-      companyId: msg.companyId ? msg.companyId.toString() : null,
-      timestamp: msg.timestamp.toISOString(),
-      updatedAt: msg.updatedAt ? msg.updatedAt.toISOString() : null,
-    }));
+    const formattedMessages = messages.map((msg) => {
+      const message = {
+        _id: msg._id.toString(),
+        userId: msg.userId ? msg.userId.toString() : "unknown",
+        username: msg.username || "Anonymous",
+        message: msg.message,
+        roomId: msg.roomId,
+        companyId: msg.companyId ? msg.companyId.toString() : null,
+        timestamp: msg.timestamp.toISOString(),
+        companyName: msg.companyName || "Unknown Company",
+        updatedAt: msg.updatedAt ? msg.updatedAt.toISOString() : null,
+      };
+
+      // For clients: Use companyName for admin/user messages, username for client messages
+      if (role === "client") {
+        message.username =
+          msg.userId === userId ? msg.username : msg.companyName;
+      }
+      // For admins/users: Always use username (firstName)
+      return message;
+    });
 
     return res.status(200).json({
       success: true,
@@ -505,6 +540,7 @@ export const handleDeleteRoom = async (req, res) => {
   try {
     console.log("📥 [Delete Room Request] Headers:", req.headers);
     console.log("📥 [Delete Room Request] Params:", req.params);
+    console.log("📥 [Delete Room Request] User:", req.user);
 
     // Check if req.user is set by authMiddleware
     if (!req.user) {
@@ -549,11 +585,21 @@ export const handleDeleteRoom = async (req, res) => {
     }
 
     // Delete all S3 voice files for the room
-    const voiceDeletionResult = await deleteS3VoicesByRoom(req.user, roomId);
+    console.log(`Calling deleteS3VoicesByRoom for room ${roomId} with user:`, req.user);
+    const voiceDeletionResult = await deleteS3VoicesByRoom({
+      user: req.user,
+      roomId,
+      app: req.app,
+    });
     console.log(`✅ Room voice deletion result:`, voiceDeletionResult);
 
     // Delete all S3 files for the room
-    const fileDeletionResult = await deleteS3FilesByRoom(req.user, roomId);
+    console.log(`Calling deleteS3FilesByRoom for room ${roomId} with user:`, req.user);
+    const fileDeletionResult = await deleteS3FilesByRoom({
+      user: req.user,
+      roomId,
+      app: req.app,
+    });
     console.log(`✅ Room file deletion result:`, fileDeletionResult);
 
     // Delete all messages for the room

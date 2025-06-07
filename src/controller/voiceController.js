@@ -421,28 +421,20 @@ export const deleteVoice = async (req, res) => {
   }
 };
 
-export const deleteS3VoicesByRoom = async (req, res) => {
+export const deleteS3VoicesByRoom = async (adata) => {
   try {
-    console.log("🗑️ [Delete S3 Voices Request] Headers:", req.headers);
-    console.log("🗑️ [Delete S3 Voices Request] Params:", req.params);
-    console.log("🗑️ [Delete S3 Voices Request] User:", req.user);
-
-    // Use user data from authMiddleware
-    const user = req.user;
-    const { roomId } = req.params;
+    const { user, roomId } = adata;
+    console.log("🗑️ [Delete S3 Voices] User:", user);
+    console.log("🗑️ [Delete S3 Voices] Room ID:", roomId);
 
     // Validate inputs
     if (!user || !user.userId || !user.companyId) {
       console.log("❌ Missing user data");
-      return res
-        .status(401)
-        .json({ error: "User authentication required: missing userId or companyId" });
+      throw new Error("User authentication required: missing userId or companyId");
     }
     if (!roomId || typeof roomId !== "string" || roomId.trim() === "") {
       console.log("❌ Invalid roomId");
-      return res
-        .status(400)
-        .json({ error: "Room ID is required and must be a non-empty string" });
+      throw new Error("Room ID is required and must be a non-empty string");
     }
 
     const db = getDB();
@@ -453,19 +445,15 @@ export const deleteS3VoicesByRoom = async (req, res) => {
     const room = await roomCollection.findOne({ roomId });
     if (!room) {
       console.log("❌ Room not found:", roomId);
-      return res.status(404).json({ error: `Room not found: ${roomId}` });
+      throw new Error(`Room not found: ${roomId}`);
     }
     if (String(room.companyId) !== String(user.companyId)) {
       console.log("❌ User not authorized for room:", roomId);
-      return res
-        .status(403)
-        .json({ error: "User not authorized for this room’s company" });
+      throw new Error("User not authorized for this room’s company");
     }
     if (roomId.startsWith("room_") && !room.users.includes(user.userId)) {
       console.log("❌ User not authorized for room:", roomId);
-      return res
-        .status(403)
-        .json({ error: "User not authorized for this room" });
+      throw new Error("User not authorized for this room");
     }
 
     // Fetch messages with voice files
@@ -520,19 +508,21 @@ export const deleteS3VoicesByRoom = async (req, res) => {
     }
 
     // Emit socket event
-    const io = req.app.get("io");
-    io.to(roomId).emit("voicesDeleted", {
-      roomId,
-      message: `Deleted ${deletedCount} voice files`,
-      timestamp: new Date().toISOString(),
-    });
+    const io = adata.io || (adata.app && adata.app.get("io")); // Access io from adata
+    if (io) {
+      io.to(roomId).emit("voicesDeleted", {
+        roomId,
+        message: `Deleted ${deletedCount} voice files`,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      console.warn("Socket.io instance not found in adata");
+    }
 
-    res.status(200).json({ success: true, deletedCount });
+    return { success: true, deletedCount };
   } catch (error) {
     console.error("❌ [Delete S3 Voices Error]:", error.message, error.stack);
-    res.status(500).json({
-      error: `An unexpected error occurred while deleting voice files: ${error.message}`,
-    });
+    throw new Error(`An unexpected error occurred while deleting voice files: ${error.message}`);
   }
 };
 

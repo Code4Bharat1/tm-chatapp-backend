@@ -86,6 +86,7 @@ const authMiddleware = async (req, res, next) => {
     const projection = {
       position: 1,
       firstName: 1,
+      name: 1, // Include name for clients
       companyId: 1,
       email: 1,
     };
@@ -123,9 +124,7 @@ const authMiddleware = async (req, res, next) => {
       email: user.email || decoded.email || null,
       companyId: user.companyId?.toString() || decoded.companyId || null,
       position: user.position || decoded.position || null,
-      firstName: user.firstName || null,
-      name:user.name || null,
-      fullName:user.fullName||null,
+      firstName: user.firstName || (role === "client" ? user.name : null) || null,
       companyName: decoded.companyName || null,
       role,
     };

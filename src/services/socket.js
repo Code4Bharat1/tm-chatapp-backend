@@ -504,32 +504,65 @@ export const initializeSocket = (server, allowedOrigins) => {
       }
     });
 
-    socket.on("typing", (currentRoom) => {
-      const roomId = currentRoom;
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) return;
-      // Emit userTyping only to non-client users in the room
+    socket.on("typing", ({ roomId, userId }) => {
+      if (!socket.user || socket.user.userId !== userId) {
+        console.warn(
+          `Unauthorized typing attempt: userId=${userId}, socket.user=`,
+          socket.user
+        );
+        return;
+      }
+
+      if (!roomId || !isUserInRoom(roomId)) {
+        console.warn(
+          `Invalid or unauthorized room: roomId=${roomId}, userId=${userId}`
+        );
+        return;
+      }
+
+      // Emit userTyping only to non-client users in the room, excluding the typer
       for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
-        const client = io.sockets.sockets.get(socketId);
-        if (client && client.user.role !== "client") {
-          client.emit("userTyping", {
-            userId,
-            username: socket.user.firstName || "Anonymous",
-            roomId,
-          });
-          console.log(
-            `📤 [userTyping Emitted] to socket ${socketId} (role=${client.user.role})`
-          );
+        if (socketId !== socket.id) {
+          // Exclude the typer
+          const client = io.sockets.sockets.get(socketId);
+          if (client && client.user.role !== "client") {
+            client.emit("userTyping", {
+              userId: socket.user.userId,
+              username: socket.user.firstName || "Anonymous",
+              roomId,
+            });
+            console.log(
+              `📤 [userTyping Emitted] to socket ${socketId} (role=${client.user.role})`
+            );
+          }
         }
       }
     });
 
-    socket.on("stopTyping", (currentRoom) => {
-      const roomId = currentRoom;
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) return;
+    socket.on("stopTyping", ({ roomId, userId }) => {
+      if (!socket.user || socket.user.userId !== userId) {
+        console.warn(
+          `Unauthorized stopTyping attempt: userId=${userId}, socket.user=`,
+          socket.user
+        );
+        return;
+      }
+
+      if (!roomId || !isUserInRoom(roomId)) {
+        console.warn(
+          `Invalid or unauthorized room: roomId=${roomId}, userId=${userId}`
+        );
+        return;
+      }
+
+      // Emit userStoppedTyping to all users in the room, excluding the typer
       socket.to(roomId).emit("userStoppedTyping", {
-        userId,
+        userId: socket.user.userId,
         roomId,
       });
+      console.log(
+        `📤 [userStoppedTyping Emitted] to room ${roomId}, userId=${userId}`
+      );
     });
 
     socket.on("joinRoom", (roomId) => {

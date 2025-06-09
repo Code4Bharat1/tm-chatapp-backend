@@ -27,106 +27,101 @@ export const initializeSocket = (server, allowedOrigins) => {
     },
   });
 
-  // Socket.IO authentication middleware
   io.use(async (socket, next) => {
     try {
-      // Parse cookies from headers
+      // Validate environment variable
+      if (!process.env.JWT_SECRET) {
+        console.error("JWT_SECRET not set");
+        return next(new Error("Server configuration error"));
+      }
+
+      // Parse cookies
       const cookieHeader = socket.handshake.headers.cookie;
-      if (!cookieHeader) {
-        console.error("No cookies sent");
-        return next(new Error("No cookies sent"));
+      if (typeof cookieHeader !== "string") {
+        console.error(`[Socket ${socket.id}] Invalid cookie header`);
+        return next(new Error("Invalid cookie header"));
       }
 
       const cookies = cookie.parse(cookieHeader);
-      console.log("Parsed Cookies:", cookies);
       const tokens = {
         user: cookies.token,
         admin: cookies.admintoken,
         client: cookies.clientToken,
       };
 
+      // Verify token
       let decoded = null;
       let role = null;
+      const tokenMap = [
+        { token: tokens.admin, role: "admin" },
+        { token: tokens.user, role: "user" },
+        { token: tokens.client, role: "client" },
+      ];
 
-      // Verify token based on type
-      if (tokens.admin) {
-        decoded = jwt.verify(tokens.admin, process.env.JWT_SECRET);
-        role = "admin";
-      } else if (tokens.user) {
-        decoded = jwt.verify(tokens.user, process.env.JWT_SECRET);
-        role = "user";
-      } else if (tokens.client) {
-        decoded = jwt.verify(tokens.client, process.env.JWT_SECRET);
-        role = "client";
-      } else {
-        console.error("No valid token found");
+      for (const { token, role: tokenRole } of tokenMap) {
+        if (token) {
+          decoded = jwt.verify(token, process.env.JWT_SECRET);
+          role = tokenRole;
+          break;
+        }
+      }
+
+      if (!decoded || !role) {
+        console.error(`[Socket ${socket.id}] No valid token found`);
         return next(new Error("Authentication token missing"));
       }
 
-      // Validate decoded token
-      if (!decoded) {
-        console.error("Invalid token: No decoded data");
-        return next(new Error("Invalid token"));
-      }
-
-      // Determine the user ID key
-      const idKey =
-        decoded.userId || decoded.clientId || decoded.adminId || decoded.id;
+      // Extract and validate ID
+      const idKey = decoded.id || decoded.userId || decoded.clientId || decoded.adminId;
       if (!idKey) {
-        console.error("Invalid token structure, user ID not found", decoded);
-        return next(new Error("Invalid token structure, user ID not found"));
+        console.error(`[Socket ${socket.id}] Invalid token structure`, decoded);
+        return next(new Error("Invalid token structure, ID not found"));
       }
 
-      const userId = new ObjectId(idKey);
-      console.log(`Querying ${role} with ID: ${userId}`);
+      let userId;
+      try {
+        userId = new ObjectId(idKey);
+      } catch (err) {
+        console.error(`[Socket ${socket.id}] Invalid ObjectId: ${idKey}`);
+        return next(new Error("Invalid user ID format"));
+      }
 
       // Access database
       const db = getDB();
-      const userCollection = db.collection("users");
-      const employeeCollection = db.collection("admins");
-      const clientCollection = db.collection("clients");
+      const collectionMap = {
+        user: db.collection("users"),
+        admin: db.collection("admins"),
+        client: db.collection("clients"),
+      };
 
-      // Define projection for user data
+      const collection = collectionMap[role];
+      if (!collection) {
+        console.error(`[Socket ${socket.id}] Invalid role: ${role}`);
+        return next(new Error("Invalid role, authorization denied"));
+      }
+
+      // Fetch user
       const projection = {
         position: 1,
         firstName: 1,
-        name: 1, // Include name for clients
+        fullName: 1, 
+        name: 1,
         companyId: 1,
         email: 1,
       };
 
-      // Fetch user based on role
-      let user = null;
-      switch (role) {
-        case "user":
-          user = await userCollection.findOne({ _id: userId }, { projection });
-          break;
-        case "admin":
-          user = await employeeCollection.findOne(
-            { _id: userId },
-            { projection }
-          );
-          break;
-        case "client":
-          user = await clientCollection.findOne(
-            { _id: userId },
-            { projection }
-          );
-          break;
-        default:
-          console.error(`Invalid role: ${role}`);
-          return next(new Error("Invalid role, authorization denied"));
-      }
-
-      // Check if user exists
+      const user = await collection.findOne({ _id: userId }, { projection });
       if (!user) {
-        console.warn(`User not found for ID: ${userId} with role: ${role}`);
+        console.warn(
+          `[Socket ${socket.id}] User not found: ID=${userId}, Role=${role}`
+        );
         return next(new Error("User not found, authorization denied"));
       }
 
-      // Normalize position
-      const normalizedPosition =
-        user.position?.toLowerCase() || decoded.position?.toLowerCase();
+      // Validate position
+      const normalizedPosition = (
+        user.position || decoded.position
+      )?.toLowerCase();
       const allowedRoles = [
         "employee",
         "ceo",
@@ -138,8 +133,7 @@ export const initializeSocket = (server, allowedOrigins) => {
       ];
       if (!normalizedPosition || !allowedRoles.includes(normalizedPosition)) {
         console.error(
-          "Invalid or unauthorized position:",
-          user.position || decoded.position
+          `[Socket ${socket.id}] Invalid position: ${normalizedPosition}`
         );
         return next(
           new Error("Authorization error: Invalid or unauthorized role")
@@ -153,28 +147,25 @@ export const initializeSocket = (server, allowedOrigins) => {
         companyId: user.companyId?.toString() || decoded.companyId || null,
         position: normalizedPosition,
         firstName:
-          user.firstName || (role === "client" ? user.name : null) || null,
+          user.firstName || user.name  || user.fullName || decoded.firstName || null,
         companyName: decoded.companyName || null,
         role,
       };
 
-      // Normalize ID based on role
-      if (role === "admin") {
-        socket.user.adminId = idKey.toString();
-        socket.user.userId = idKey.toString(); // Normalize to userId
-      } else if (role === "user") {
-        socket.user.userId = idKey.toString();
-      } else if (role === "client") {
-        socket.user.clientId = idKey.toString();
-        socket.user.userId = idKey.toString(); // Normalize to userId
-      }
+      console.log("the user socket.user is  : ", socket.user);  
+
+      // Normalize IDs
+      if (role === "admin") socket.user.adminId = idKey.toString();
+      if (role === "client") socket.user.clientId = idKey.toString();
 
       console.log(
-        `Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}, FirstName=${socket.user.firstName}`
+        `[Socket ${socket.id}] Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}`
       );
       next();
     } catch (error) {
-      console.error("Socket Authentication Error:", error.name, error.message);
+      console.error(
+        `[Socket ${socket.id}] Authentication Error: ${error.name} - ${error.message}`
+      );
       next(new Error(`Authentication error: ${error.message}`));
     }
   });

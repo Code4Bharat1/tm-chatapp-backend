@@ -124,8 +124,10 @@ export const uploadFile = async (req, res) => {
 
     const db = getDB();
     const messageCollection = db.collection("messages");
+    const companyCollection = db.collection("companyregistrations");
     const roomId = req.body.roomId || `company_${user.companyId}`;
     console.log("📤 [Uploading to room]:", roomId);
+    
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
@@ -137,12 +139,22 @@ export const uploadFile = async (req, res) => {
       }
     }
 
+    // Fetch company name from companyInfo.companyName (same logic as messageController)
+    const company = await companyCollection.findOne({
+      _id: new ObjectId(user.companyId),
+    });
+    const companyName = company?.companyInfo?.companyName || "Unknown Company";
+    console.log(
+      `Fetched company name: ${companyName} for companyId: ${user.companyId}`
+    );
+
     const fileMetadata = {
       _id: new ObjectId(),
       message: "File uploaded",
       userId: user.userId,
       username: user.firstName || "Anonymous",
       roomId,
+      companyName, // Store the fetched company name (fixed typo from 'comapanyName')
       companyId: new ObjectId(user.companyId),
       timestamp: new Date(),
       file: {
@@ -167,12 +179,15 @@ export const uploadFile = async (req, res) => {
     );
 
     const io = req.app.get("io");
-    io.to(roomId).emit("newFile", {
+    
+    // Create the base message object
+    const baseMessage = {
       _id: fileMetadata._id.toString(),
       message: fileMetadata.message,
       userId: fileMetadata.userId,
       username: fileMetadata.username,
       roomId: fileMetadata.roomId,
+      companyName: fileMetadata.companyName,
       timestamp: fileMetadata.timestamp.toISOString(),
       file: {
         filename: fileMetadata.file.filename,
@@ -181,7 +196,56 @@ export const uploadFile = async (req, res) => {
         size: fileMetadata.file.size,
         url: presignedUrl,
       },
-    });
+    };
+
+    // Get all users in the room to determine their roles and send appropriate messages
+    const userCollection = db.collection("users");
+    const employeeCollection = db.collection("admins");
+    const clientCollection = db.collection("clients");
+    
+    // Get room details
+    const room = await roomCollection.findOne({ roomId });
+    if (room && room.users) {
+      // Send personalized messages to each user based on their role
+      for (const roomUserId of room.users) {
+        try {
+          // Determine user role
+          let userRole = null;
+          const roomUser = await userCollection.findOne({ _id: new ObjectId(roomUserId) });
+          if (roomUser) {
+            userRole = "user";
+          } else {
+            const employee = await employeeCollection.findOne({ _id: new ObjectId(roomUserId) });
+            if (employee) {
+              userRole = "admin";
+            } else {
+              const client = await clientCollection.findOne({ _id: new ObjectId(roomUserId) });
+              if (client) {
+                userRole = "client";
+              }
+            }
+          }
+
+          // Create message based on recipient's role
+          let messageToSend = { ...baseMessage };
+          
+          // For clients: show company name for other users' messages, show username for their own messages
+          if (userRole === "client") {
+            messageToSend.username = fileMetadata.userId === roomUserId 
+              ? fileMetadata.username 
+              : fileMetadata.companyName;
+          }
+          
+          // Send to specific user
+          io.to(roomUserId).emit("newFile", messageToSend);
+        } catch (userError) {
+          console.warn(`⚠️ Could not determine role for user ${roomUserId}:`, userError.message);
+        }
+      }
+    } else {
+      // Fallback: broadcast to room (original logic)
+      io.to(roomId).emit("newFile", baseMessage);
+    }
 
     res.status(200).json({
       message: "File uploaded successfully",
@@ -503,9 +567,14 @@ export const getFilesByRoom = async (req, res) => {
         .json({ success: false, error: "roomId is required" });
     }
 
-    // Verify room access
+    // Get database collections
     const db = getDB();
     const roomCollection = db.collection("rooms");
+    const userCollection = db.collection("users");
+    const employeeCollection = db.collection("admins");
+    const clientCollection = db.collection("clients");
+
+    // Verify room access
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
       if (!room || !room.users.includes(user.userId)) {
@@ -523,6 +592,32 @@ export const getFilesByRoom = async (req, res) => {
       return res
         .status(403)
         .json({ success: false, error: "Not authorized to access this room" });
+    }
+
+    // Fetch user role (same logic as getMessagesByRoom)
+    let role = null;
+    const userDoc = await userCollection.findOne({ _id: new ObjectId(user.userId) });
+    if (userDoc) {
+      role = "user";
+    } else {
+      const employee = await employeeCollection.findOne({
+        _id: new ObjectId(user.userId),
+      });
+      if (employee) {
+        role = "admin";
+      } else {
+        const client = await clientCollection.findOne({
+          _id: new ObjectId(user.userId),
+        });
+        if (client) {
+          role = "client";
+        }
+      }
+    }
+
+    if (!role) {
+      console.warn(`⚠️ [Validation Failed] User not found: ${user.userId}`);
+      return res.status(404).json({ message: "User not found" });
     }
 
     // Fetch file messages from MongoDB
@@ -568,13 +663,26 @@ export const getFilesByRoom = async (req, res) => {
             };
           }
 
+          // Apply the same username logic as getMessagesByRoom
+          let displayUsername = message.username || "Anonymous";
+          
+          // For clients: Use companyName for admin/user messages, username for client messages
+          if (role === "client") {
+            displayUsername = message.userId === user.userId 
+              ? message.username || "Anonymous"
+              : message.companyName || "Unknown Company";
+          }
+          // For admins/users: Always use username (firstName)
+
           const messageData = {
             _id: message._id.toString(),
             message: message.message || (fileData ? "File uploaded" : ""),
-            userId: message.userId,
-            username: message.username || "Anonymous",
+            userId: message.userId ? message.userId.toString() : "unknown",
+            username: displayUsername,
             roomId: message.roomId,
+            companyId: message.companyId ? message.companyId.toString() : null,
             timestamp: message.timestamp.toISOString(),
+            companyName: message.companyName || "Unknown Company",
             updatedAt: message.updatedAt
               ? message.updatedAt.toISOString()
               : undefined,
@@ -595,13 +703,24 @@ export const getFilesByRoom = async (req, res) => {
           );
           // Include text messages even if file validation fails
           if (!message.file) {
+            // Apply the same username logic for non-file messages too
+            let displayUsername = message.username || "Anonymous";
+            
+            if (role === "client") {
+              displayUsername = message.userId === user.userId 
+                ? message.username || "Anonymous"
+                : message.companyName || "Unknown Company";
+            }
+
             return {
               _id: message._id.toString(),
               message: message.message || "",
-              userId: message.userId,
-              username: message.username || "Anonymous",
+              userId: message.userId ? message.userId.toString() : "unknown",
+              username: displayUsername,
               roomId: message.roomId,
+              companyId: message.companyId ? message.companyId.toString() : null,
               timestamp: message.timestamp.toISOString(),
+              companyName: message.companyName || "Unknown Company",
               updatedAt: message.updatedAt
                 ? message.updatedAt.toISOString()
                 : undefined,
@@ -616,7 +735,7 @@ export const getFilesByRoom = async (req, res) => {
     const validMessages = messagesWithUrls.filter((msg) => msg !== null);
 
     console.log(
-      `📜 [Fetched ${validMessages.length} messages] for room: ${roomId}`
+      `📜 [Fetched ${validMessages.length} messages] for room: ${roomId}, User: ${user.userId}, Role: ${role}`
     );
     res.status(200).json({
       success: true,

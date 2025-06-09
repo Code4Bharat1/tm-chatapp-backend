@@ -135,8 +135,10 @@ export const uploadVoice = async (req, res) => {
 
     const db = getDB();
     const messageCollection = db.collection("messages");
+    const companyCollection = db.collection("companyregistrations");
     const roomId = req.body.roomId || `company_${user.companyId}`;
     console.log("📤 [Uploading voice to room]:", roomId);
+    
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
@@ -148,6 +150,15 @@ export const uploadVoice = async (req, res) => {
       }
     }
 
+    // Fetch company name from companyInfo.companyName (same logic as messageController)
+    const company = await companyCollection.findOne({
+      _id: new ObjectId(user.companyId),
+    });
+    const companyName = company?.companyInfo?.companyName || "Unknown Company";
+    console.log(
+      `Fetched company name: ${companyName} for companyId: ${user.companyId}`
+    );
+
     // Save voice file metadata to MongoDB
     const voiceMetadata = {
       _id: new ObjectId(),
@@ -155,6 +166,7 @@ export const uploadVoice = async (req, res) => {
       userId: user.userId,
       username: user.firstName || "Anonymous",
       roomId,
+      companyName, // Store the fetched company name
       companyId: new ObjectId(user.companyId),
       timestamp: new Date(),
       voice: {
@@ -179,14 +191,14 @@ export const uploadVoice = async (req, res) => {
       { expiresIn: 3600 }
     );
 
-    // Emit Socket.IO event
-    const io = req.app.get("io");
-    io.to(roomId).emit("newVoice", {
+    // Create the base message object
+    const baseMessage = {
       _id: voiceMetadata._id.toString(),
       message: voiceMetadata.message,
       userId: voiceMetadata.userId,
       username: voiceMetadata.username,
       roomId: voiceMetadata.roomId,
+      companyName: voiceMetadata.companyName,
       timestamp: voiceMetadata.timestamp.toISOString(),
       voice: {
         filename: voiceMetadata.voice.filename,
@@ -195,7 +207,58 @@ export const uploadVoice = async (req, res) => {
         size: voiceMetadata.voice.size,
         url: presignedUrl,
       },
-    });
+    };
+
+    // Get all users in the room to determine their roles and send appropriate messages
+    const userCollection = db.collection("users");
+    const employeeCollection = db.collection("admins");
+    const clientCollection = db.collection("clients");
+    
+    // Get room details
+    const room = await roomCollection.findOne({ roomId });
+    if (room && room.users) {
+      // Send personalized messages to each user based on their role
+      for (const roomUserId of room.users) {
+        try {
+          // Determine user role
+          let userRole = null;
+          const roomUser = await userCollection.findOne({ _id: new ObjectId(roomUserId) });
+          if (roomUser) {
+            userRole = "user";
+          } else {
+            const employee = await employeeCollection.findOne({ _id: new ObjectId(roomUserId) });
+            if (employee) {
+              userRole = "admin";
+            } else {
+              const client = await clientCollection.findOne({ _id: new ObjectId(roomUserId) });
+              if (client) {
+                userRole = "client";
+              }
+            }
+          }
+
+          // Create message based on recipient's role
+          let messageToSend = { ...baseMessage };
+          
+          // For clients: show company name for other users' messages, show username for their own messages
+          if (userRole === "client") {
+            messageToSend.username = voiceMetadata.userId === roomUserId 
+              ? voiceMetadata.username 
+              : voiceMetadata.companyName;
+          }
+          
+          // Send to specific user
+          const io = req.app.get("io");
+          io.to(roomUserId).emit("newVoice", messageToSend);
+        } catch (userError) {
+          console.warn(`⚠️ Could not determine role for user ${roomUserId}:`, userError.message);
+        }
+      }
+    } else {
+      // Fallback: broadcast to room (original logic)
+      const io = req.app.get("io");
+      io.to(roomId).emit("newVoice", baseMessage);
+    }
 
     // Return full metadata in response
     res.status(200).json({
@@ -204,6 +267,7 @@ export const uploadVoice = async (req, res) => {
       userId: voiceMetadata.userId,
       username: voiceMetadata.username,
       roomId: voiceMetadata.roomId,
+      companyName: voiceMetadata.companyName,
       timestamp: voiceMetadata.timestamp.toISOString(),
       voice: {
         filename: voiceMetadata.voice.filename,
@@ -558,9 +622,14 @@ export const getAllCompanyVoices = async (req, res) => {
         .json({ success: false, error: "roomId is required" });
     }
 
-    // Verify room access
+    // Get database collections
     const db = getDB();
     const roomCollection = db.collection("rooms");
+    const userCollection = db.collection("users");
+    const employeeCollection = db.collection("admins");
+    const clientCollection = db.collection("clients");
+
+    // Verify room access
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
       if (!room) {
@@ -583,6 +652,32 @@ export const getAllCompanyVoices = async (req, res) => {
       return res
         .status(403)
         .json({ success: false, error: "Not authorized to access this room" });
+    }
+
+    // Fetch user role (same logic as getMessagesByRoom)
+    let role = null;
+    const userDoc = await userCollection.findOne({ _id: new ObjectId(user.userId) });
+    if (userDoc) {
+      role = "user";
+    } else {
+      const employee = await employeeCollection.findOne({
+        _id: new ObjectId(user.userId),
+      });
+      if (employee) {
+        role = "admin";
+      } else {
+        const client = await clientCollection.findOne({
+          _id: new ObjectId(user.userId),
+        });
+        if (client) {
+          role = "client";
+        }
+      }
+    }
+
+    if (!role) {
+      console.warn(`⚠️ [Validation Failed] User not found: ${user.userId}`);
+      return res.status(404).json({ message: "User not found" });
     }
 
     // Fetch voice messages from MongoDB
@@ -635,13 +730,27 @@ export const getAllCompanyVoices = async (req, res) => {
             { expiresIn: 3600 }
           );
 
+          // Apply the same username logic as getMessagesByRoom
+          let displayUsername = msg.username || "Anonymous";
+          
+          // For clients: Use companyName for admin/user messages, username for client messages
+          if (role === "client") {
+            displayUsername = msg.userId === user.userId 
+              ? msg.username || "Anonymous"
+              : msg.companyName || "Unknown Company";
+          }
+          // For admins/users: Always use username (firstName)
+
           const messageData = {
             _id: msg._id.toString(),
             message: msg.message || "Voice message",
-            userId: msg.userId,
-            username: msg.username || "Anonymous",
+            userId: msg.userId ? msg.userId.toString() : "unknown",
+            username: displayUsername,
             roomId: msg.roomId,
+            companyId: msg.companyId ? msg.companyId.toString() : null,
             timestamp: msg.timestamp.toISOString(),
+            companyName: msg.companyName || "Unknown Company",
+            updatedAt: msg.updatedAt ? msg.updatedAt.toISOString() : null,
             voice: {
               filename: msg.voice.filename,
               originalName: msg.voice.originalName,
@@ -667,7 +776,7 @@ export const getAllCompanyVoices = async (req, res) => {
     const validMessages = messagesWithDetails.filter((msg) => msg !== null);
 
     console.log(
-      `📥 [Fetched ${validMessages.length} valid voice messages] for room: ${roomId}`
+      `📥 [Fetched ${validMessages.length} valid voice messages] for room: ${roomId}, User: ${user.userId}, Role: ${role}`
     );
 
     res.status(200).json({

@@ -8,6 +8,7 @@ const authMiddleware = async (req, res, next) => {
   const userCollection = db.collection("users");
   const employeeCollection = db.collection("admins");
   const clientCollection = db.collection("clients");
+  const companyCollection = db.collection("companyregistrations");
 
   try {
     let token = null;
@@ -119,14 +120,35 @@ const authMiddleware = async (req, res, next) => {
         .json({ message: "User not found, authorization denied" });
     }
 
+    // Fetch company name based on companyId
+    let companyName = decoded.companyName || null;
+    const companyId = user.companyId || decoded.companyId || null;
+    if (companyId) {
+      try {
+        const company = await companyCollection.findOne(
+          { _id: new ObjectId(companyId) },
+          { projection: { "companyInfo.companyName": 1 } }
+        );
+        if (company && company.companyInfo) {
+          companyName = company.companyInfo.companyName || "Unknown";
+        } else {
+          console.warn(`Company not found for ID: ${companyId}`);
+        }
+      } catch (error) {
+        console.error(`Error fetching company for ID: ${companyId}`, error.message);
+      }
+    } else {
+      console.warn("No companyId found in user or token");
+    }
+
     // Attach user info to req.user
     req.user = {
       userId: idKey.toString(),
       email: user.email || decoded.email || null,
-      companyId: user.companyId?.toString() || decoded.companyId || null,
+      companyId: companyId?.toString() || null,
       position: user.position || decoded.position || null,
-      firstName: user.firstName || user.name  || user.fullName || decoded.firstName || null,
-      companyName: decoded.companyName || null,
+      firstName: user.firstName || user.name || user.fullName || decoded.firstName || null,
+      companyName: companyName,
       role,
     };
     console.log("User authenticated:", req.user);

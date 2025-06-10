@@ -13,7 +13,8 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 8080; // Use 8080 as default
-const allowedOrigins = ["http://localhost:3000"]; // Match client origin
+const allowedOrigins = ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"]; // Match client origin
+
 
 // Middleware
 app.use(

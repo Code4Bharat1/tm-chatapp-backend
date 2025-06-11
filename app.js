@@ -28,6 +28,10 @@ app.use(cookieParser());
 // Routes
 app.use('/api', companyChat);
 
+app.get("/", (req, res) => {
+  res.send("api is running");
+});
+
 // Initialize Socket.IO
 const io = initializeSocket(server, allowedOrigins);
 

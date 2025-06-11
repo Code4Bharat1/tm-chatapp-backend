@@ -152,15 +152,13 @@ export const initializeSocket = (server, allowedOrigins) => {
         role,
       };
 
-      console.log("the user socket.user is  : ", socket.user);  
-
       // Normalize IDs
       if (role === "admin") socket.user.adminId = idKey.toString();
       if (role === "client") socket.user.clientId = idKey.toString();
 
-      console.log(
-        `[Socket ${socket.id}] Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}`
-      );
+      // console.log(
+      //   `[Socket ${socket.id}] Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}`
+      // );
       next();
     } catch (error) {
       console.error(
@@ -193,7 +191,7 @@ export const initializeSocket = (server, allowedOrigins) => {
 
     socket.join(userId);
     socket.join(companyRoom);
-    console.log(`✅ [Socket Connected] User ID: ${userId}`);
+    // console.log(`✅ [Socket Connected] User ID: ${userId}`);
 
     // Emit existing rooms to the connected user
     roomCollection
@@ -213,7 +211,7 @@ export const initializeSocket = (server, allowedOrigins) => {
             users: socket.user.role === "client" ? [] : room.users,
             creator: room.creator,
           });
-          console.log(`📤 [Room Emitted] ${room.roomId} for ${userId}`);
+          // console.log(`📤 [Room Emitted] ${room.roomId} for ${userId}`);
         });
       })
       .catch((err) => {
@@ -360,20 +358,20 @@ export const initializeSocket = (server, allowedOrigins) => {
             users: targetSocket.user.role === "client" ? [] : allUserIds,
             creator: userId,
           });
-          console.log(
-            `📤 [roomCreated Emitted] to user ${uid} (role=${targetSocket.user.role})`
-          );
+          // console.log(
+          //   `📤 [roomCreated Emitted] to user ${uid} (role=${targetSocket.user.role})`
+          // );
         }
       });
 
-      console.log(
-        "Checking connected sockets for room join:",
-        io.sockets.sockets.size
-      );
+      // console.log(
+      //   "Checking connected sockets for room join:",
+      //   io.sockets.sockets.size
+      // );
       for (const [socketId, client] of io.sockets.sockets) {
         if (allUserIds.includes(client.user?.userId)) {
           client.join(roomId);
-          console.log(`Socket ${socketId} joined room ${roomId}`);
+          // console.log(`Socket ${socketId} joined room ${roomId}`);
         }
       }
 
@@ -395,17 +393,17 @@ export const initializeSocket = (server, allowedOrigins) => {
       });
       io.to(roomId).emit("newMessage", systemMsg);
 
-      console.log(`Room Created: roomId=${roomId}, users=`, allUserIds);
+      // console.log(`Room Created: roomId=${roomId}, users=`, allUserIds);
     });
     socket.on("sendMessage", async (message, currentRoom) => {
-      console.log(
-        "sendMessage: currentRoom:",
-        currentRoom,
-        "message:",
-        message
-      );
+      // console.log(
+      //   "sendMessage: currentRoom:",
+      //   currentRoom,
+      //   "message:",
+      //   message
+      // );
       const roomId = currentRoom || getActiveRoom();
-      console.log("sendMessage: roomId:", roomId);
+      // console.log("sendMessage: roomId:", roomId);
 
       if (roomId !== companyRoom && !isUserInRoom(roomId)) {
         console.error(
@@ -463,7 +461,7 @@ export const initializeSocket = (server, allowedOrigins) => {
 
     socket.on("editMessage", async ({ messageId, newMessage, currentRoom }) => {
       const roomId = currentRoom;
-      console.log("editMessage: roomId:", roomId);
+      // console.log("editMessage: roomId:", roomId);
       if (roomId !== companyRoom && !isUserInRoom(roomId)) {
         console.error(
           `Unauthorized edit attempt: userId=${userId}, roomId=${roomId}`
@@ -480,7 +478,7 @@ export const initializeSocket = (server, allowedOrigins) => {
 
     socket.on("deleteMessage", async (messageId, currentRoom) => {
       const roomId = currentRoom || getActiveRoom();
-      console.log("deleteMessage: roomId:", roomId);
+      // console.log("deleteMessage: roomId:", roomId);
       if (roomId !== companyRoom && !isUserInRoom(roomId)) {
         console.error(
           `Unauthorized delete attempt: userId=${userId}, roomId=${roomId}`
@@ -522,9 +520,9 @@ export const initializeSocket = (server, allowedOrigins) => {
               username: socket.user.firstName || "Anonymous",
               roomId,
             });
-            console.log(
-              `📤 [userTyping Emitted] to socket ${socketId} (role=${client.user.role})`
-            );
+            // console.log(
+            //   `📤 [userTyping Emitted] to socket ${socketId} (role=${client.user.role})`
+            // );
           }
         }
       }
@@ -580,9 +578,9 @@ export const initializeSocket = (server, allowedOrigins) => {
       });
 
       const onlineUsers = [...onlineUsersByRoom.get(roomId).values()];
-      console.log(
-        `Online Users Update for roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
-      );
+      // console.log(
+      //   `Online Users Update for roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
+      // );
 
       // Emit to the joining user
       socket.emit("joinConfirmation", {
@@ -603,17 +601,17 @@ export const initializeSocket = (server, allowedOrigins) => {
             user: { userId, username: socket.user.firstName || "Anonymous" },
             roomId,
           });
-          console.log(
-            `📤 [userJoined Emitted] to socket ${socketId} (role=${client.user.role})`
-          );
+          // console.log(
+          //   `📤 [userJoined Emitted] to socket ${socketId} (role=${client.user.role})`
+          // );
         }
       }
 
       // Emit online users update to all users in the room
-      console.log(
-        `Checking sockets in room ${roomId}:`,
-        io.sockets.adapter.rooms.get(roomId)?.size || 0
-      );
+      // console.log(
+      //   `Checking sockets in room ${roomId}:`,
+      //   io.sockets.adapter.rooms.get(roomId)?.size || 0
+      // );
       for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
         const client = io.sockets.sockets.get(socketId);
         if (client) {
@@ -622,18 +620,18 @@ export const initializeSocket = (server, allowedOrigins) => {
               userCount: onlineUsers.length,
               roomId,
             });
-            console.log(
-              `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
-            );
+            // console.log(
+            //   `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
+            // );
           } else {
             client.emit("onlineUsersUpdate", {
               users: onlineUsers,
               roomId,
             });
-            console.log(
-              `Emitted users to non-client socket ${socketId}: users=`,
-              onlineUsers
-            );
+            // console.log(
+            //   `Emitted users to non-client socket ${socketId}: users=`,
+            //   onlineUsers
+            // );
           }
         }
       }
@@ -656,15 +654,15 @@ export const initializeSocket = (server, allowedOrigins) => {
       if (onlineUsersByRoom.has(roomId)) {
         onlineUsersByRoom.get(roomId).delete(userId);
         const onlineUsers = [...onlineUsersByRoom.get(roomId).values()];
-        console.log(
-          `Online Users Update after leave: roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
-        );
+        // console.log(
+        //   `Online Users Update after leave: roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
+        // );
 
         // Emit online users update to all users in the room
-        console.log(
-          `Checking sockets in room ${roomId}:`,
-          io.sockets.adapter.rooms.get(roomId)?.size || 0
-        );
+        // console.log(
+        //   `Checking sockets in room ${roomId}:`,
+        //   io.sockets.adapter.rooms.get(roomId)?.size || 0
+        // );
         for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
           const client = io.sockets.sockets.get(socketId);
           if (client) {
@@ -673,18 +671,18 @@ export const initializeSocket = (server, allowedOrigins) => {
                 userCount: onlineUsers.length,
                 roomId,
               });
-              console.log(
-                `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
-              );
+              // console.log(
+              //   `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
+              // );
             } else {
               client.emit("onlineUsersUpdate", {
                 users: onlineUsers,
                 roomId,
               });
-              console.log(
-                `Emitted users to non-client socket ${socketId}: users=`,
-                onlineUsers
-              );
+              // console.log(
+              //   `Emitted users to non-client socket ${socketId}: users=`,
+              //   onlineUsers
+              // );
             }
           }
         }
@@ -702,15 +700,15 @@ export const initializeSocket = (server, allowedOrigins) => {
         if (users.has(userId)) {
           users.delete(userId);
           const onlineUsers = [...users.values()];
-          console.log(
-            `Online Users Update after disconnect: roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
-          );
+          // console.log(
+          //   `Online Users Update after disconnect: roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
+          // );
 
           // Emit online users update to all users in the room
-          console.log(
-            `Checking sockets in room ${roomId}:`,
-            io.sockets.adapter.rooms.get(roomId)?.size || 0
-          );
+          // console.log(
+          //   `Checking sockets in room ${roomId}:`,
+          //   io.sockets.adapter.rooms.get(roomId)?.size || 0
+          // );
           for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
             const client = io.sockets.sockets.get(socketId);
             if (client) {
@@ -719,18 +717,18 @@ export const initializeSocket = (server, allowedOrigins) => {
                   userCount: onlineUsers.length,
                   roomId,
                 });
-                console.log(
-                  `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
-                );
+                // console.log(
+                //   `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
+                // );
               } else {
                 client.emit("onlineUsersUpdate", {
                   users: onlineUsers,
                   roomId,
                 });
-                console.log(
-                  `Emitted users to non-client socket ${socketId}: users=`,
-                  onlineUsers
-                );
+                // console.log(
+                //   `Emitted users to non-client socket ${socketId}: users=`,
+                //   onlineUsers
+                // );
               }
             }
           }

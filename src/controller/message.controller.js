@@ -12,7 +12,6 @@ export const handleSendMessage = async (socket, message, targetRoom) => {
 
   try {
     const user = socket.user;
-    console.log("sending user:", user);
 
     if (!message || typeof message !== "string" || message.trim() === "") {
       console.warn("⚠️ [Validation Failed] Empty or invalid message");
@@ -29,9 +28,6 @@ export const handleSendMessage = async (socket, message, targetRoom) => {
       _id: new ObjectId(user.companyId),
     });
     const companyName = company?.companyInfo?.companyName || "Unknown Company";
-    console.log(
-      `Fetched company name: ${companyName} for companyId: ${user.companyId}`
-    );
 
     const formattedMessage = {
       userId: user.userId,
@@ -44,10 +40,6 @@ export const handleSendMessage = async (socket, message, targetRoom) => {
     };
 
     const savedMessage = await messageCollection.insertOne(formattedMessage);
-
-    console.log(
-      `💾 [Message Saved] ID: ${savedMessage.insertedId}, Room: ${targetRoom}`
-    );
 
     return {
       ...formattedMessage,
@@ -71,10 +63,6 @@ export const handleEditMessage = async (socket, data, targetRoom) => {
   try {
     const user = socket.user;
     const { messageId, newMessage } = data;
-
-    console.log(
-      `📥 [Edit Message Data] Received: messageId=${messageId}, newMessage="${newMessage}", Room: ${targetRoom}`
-    );
 
     if (!messageId || !ObjectId.isValid(messageId)) {
       console.warn("⚠️ [Validation Failed] Invalid or missing message ID");
@@ -133,9 +121,6 @@ export const handleEditMessage = async (socket, data, targetRoom) => {
       );
       return socket.emit("errorMessage", "Failed to update message");
     }
-
-    console.log(`✏️ [Message Updated] ID: ${messageId}, Room: ${targetRoom}`);
-    console.log(`📤 [Broadcasting Updated Message] to room: ${targetRoom}`);
 
     const messageToSend = {
       ...updatedMessage,
@@ -200,9 +185,6 @@ export const handleDeleteMessage = async (socket, messageId, targetRoom) => {
       return socket.emit("errorMessage", "Failed to delete message");
     }
 
-    console.log(`🗑️ [Message Deleted] ID: ${messageId}, Room: ${targetRoom}`);
-    console.log(`📤 [Broadcasting Delete] to room: ${targetRoom}`);
-
     socket.to(targetRoom).emit("messageDeleted", { messageId });
     socket.emit("messageDeleted", { messageId });
   } catch (error) {
@@ -228,7 +210,6 @@ export const getLogginUser = async (req, res) => {
     };
 
     // Return the normalized user data
-    console.log("Returning authenticated user data:", normalizedUser);
     return res.status(200).json(normalizedUser);
   } catch (error) {
     console.error("Error in getLogginUser:", error.message, error.stack);
@@ -256,9 +237,6 @@ export const getUsersByCompany = async (req, res) => {
 
     // Return empty array for client role without error
     if (req.user.role === "client") {
-      console.log(
-        `Client user ${req.user.userId} requested users; returning empty list`
-      );
       return res.status(200).json({
         success: true,
         data: [],
@@ -311,11 +289,6 @@ export const getUsersByCompany = async (req, res) => {
       position: user.position || user.role || null,
       role: user.role,
     }));
-
-    console.log(
-      `📋 [Users Fetched] Company ID: ${companyId}, Count: ${allUsers.length}`,
-      allUsers
-    );
 
     return res.status(200).json({
       success: true,
@@ -397,10 +370,6 @@ export const getMessagesByRoom = async (req, res) => {
       .find({ roomId })
       .sort({ timestamp: 1 })
       .toArray();
-
-    console.log(
-      `📋 [Messages Fetched] Room ID: ${roomId}, Count: ${messages.length}, User: ${userId}, Role: ${role}`
-    );
 
     // Format messages for frontend
     const formattedMessages = messages.map((msg) => {
@@ -509,13 +478,10 @@ export const handleLeaveRoom = async (socket, roomId) => {
     const updatedRoom = await roomCollection.findOne({ roomId });
     if (updatedRoom.users.length === 0) {
       await roomCollection.deleteOne({ roomId });
-      console.log(`🗑️ [Room Deleted] Empty room: ${roomId}`);
     }
 
     // Leave the socket room
     socket.leave(roomId);
-
-    console.log(`🚪 [User Left Room] User: ${user.userId}, Room: ${roomId}`);
 
     // Notify the user and others in the room
     socket.emit("roomLeft", {
@@ -538,10 +504,6 @@ export const handleLeaveRoom = async (socket, roomId) => {
 
 export const handleDeleteRoom = async (req, res) => {
   try {
-    console.log("📥 [Delete Room Request] Headers:", req.headers);
-    console.log("📥 [Delete Room Request] Params:", req.params);
-    console.log("📥 [Delete Room Request] User:", req.user);
-
     // Check if req.user is set by authMiddleware
     if (!req.user) {
       console.warn("No authenticated user found in req.user");
@@ -585,31 +547,24 @@ export const handleDeleteRoom = async (req, res) => {
     }
 
     // Delete all S3 voice files for the room
-    console.log(`Calling deleteS3VoicesByRoom for room ${roomId} with user:`, req.user);
     const voiceDeletionResult = await deleteS3VoicesByRoom({
       user: req.user,
       roomId,
       app: req.app,
     });
-    console.log(`✅ Room voice deletion result:`, voiceDeletionResult);
 
     // Delete all S3 files for the room
-    console.log(`Calling deleteS3FilesByRoom for room ${roomId} with user:`, req.user);
     const fileDeletionResult = await deleteS3FilesByRoom({
       user: req.user,
       roomId,
       app: req.app,
     });
-    console.log(`✅ Room file deletion result:`, fileDeletionResult);
 
     // Delete all messages for the room
     const messageCollection = db.collection("messages");
     const messageDeletionResult = await messageCollection.deleteMany({
       roomId,
     });
-    console.log(
-      `✅ Deleted ${messageDeletionResult.deletedCount} messages for room ${roomId}`
-    );
 
     // Delete the room from MongoDB
     const deleteResult = await roomCollection.deleteOne({ roomId });
@@ -619,7 +574,6 @@ export const handleDeleteRoom = async (req, res) => {
         .status(500)
         .json({ error: "Failed to delete room from rooms collection" });
     }
-    console.log(`✅ Room deleted from rooms collection: ${roomId}`);
 
     // Emit Socket.IO event to notify clients
     const io = req.app.get("io");
@@ -665,12 +619,7 @@ export const getRooms = async (req, res) => {
       })
       .toArray();
 
-    console.log(
-      `📋 [Rooms Fetched] User ID: ${req.user.userId}, Company ID: ${req.user.companyId}, Count: ${rooms.length}`,
-      rooms
-    );
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: rooms.map((room) => ({
         roomId: room.roomId,

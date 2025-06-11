@@ -592,9 +592,9 @@ export const deleteS3VoicesByRoom = async (adata) => {
 
 export const getAllCompanyVoices = async (req, res) => {
   try {
-    console.log("📥 [Fetch All Voices Request] Headers:", req.headers);
-    console.log("📥 [Fetch All Voices Request] Params:", req.params);
-    console.log("📥 [Fetch All Voices Request] User:", req.user);
+    // console.log("📥 [Fetch All Voices Request] Headers:", req.headers);
+    // console.log("📥 [Fetch All Voices Request] Params:", req.params);
+    // console.log("📥 [Fetch All Voices Request] User:", req.user);
 
     // Use user data from authMiddleware
     const user = req.user;
@@ -718,7 +718,7 @@ export const getAllCompanyVoices = async (req, res) => {
             Key: msg.voice.s3Key,
           };
           await s3.send(new HeadObjectCommand(headParams));
-          console.log(`✅ S3 Voice Exists: ${msg.voice.s3Key}`);
+          // console.log(`✅ S3 Voice Exists: ${msg.voice.s3Key}`);
 
           // Generate presigned URL
           const presignedUrl = await getSignedUrl(
@@ -760,7 +760,7 @@ export const getAllCompanyVoices = async (req, res) => {
             },
           };
 
-          console.log(`📤 [Processed Voice Message]:`, JSON.stringify(messageData));
+          // console.log(`📤 [Processed Voice Message]:`, JSON.stringify(messageData));
           return messageData;
         } catch (s3Error) {
           console.error(
@@ -775,9 +775,9 @@ export const getAllCompanyVoices = async (req, res) => {
     // Filter out null entries
     const validMessages = messagesWithDetails.filter((msg) => msg !== null);
 
-    console.log(
-      `📥 [Fetched ${validMessages.length} valid voice messages] for room: ${roomId}, User: ${user.userId}, Role: ${role}`
-    );
+    // console.log(
+    //   `📥 [Fetched ${validMessages.length} valid voice messages] for room: ${roomId}, User: ${user.userId}, Role: ${role}`
+    // );
 
     res.status(200).json({
       success: true,

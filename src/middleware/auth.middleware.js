@@ -26,7 +26,6 @@ const authMiddleware = async (req, res, next) => {
 
     // Parse cookies
     const cookies = parse(req.headers.cookie);
-    console.log("Cookies parsed:", cookies);
 
     // Try tokens in order of priority
     if (cookies.token) {
@@ -59,7 +58,6 @@ const authMiddleware = async (req, res, next) => {
     // Verify token
     try {
       decoded = jwt.verify(token, secret);
-      console.log("Token decoded:", decoded);
     } catch (error) {
       console.error("Token verification error:", error.message);
       return res.status(401).json({
@@ -81,7 +79,6 @@ const authMiddleware = async (req, res, next) => {
     }
 
     const userId = new ObjectId(idKey);
-    console.log(`Querying ${role} with ID: ${userId}`);
 
     // Define projection for user data
     const projection = {
@@ -151,7 +148,6 @@ const authMiddleware = async (req, res, next) => {
       companyName: companyName,
       role,
     };
-    console.log("User authenticated:", req.user);
 
     // Final validation before proceeding
     if (!req.user.role) {
@@ -161,7 +157,6 @@ const authMiddleware = async (req, res, next) => {
         .json({ message: "Internal error: role not set" });
     }
 
-    console.log("Proceeding to next middleware/controller");
     next();
   } catch (error) {
     console.error("Authentication error:", error.message, error.stack);

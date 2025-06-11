@@ -537,9 +537,9 @@ export const deleteS3FilesByRoom = async (adata) => {
 
 export const getFilesByRoom = async (req, res) => {
   try {
-    console.log("📜 [Get Files Request] Headers:", req.headers);
-    console.log("📜 [Get Files Request] Params:", req.params);
-    console.log("📜 [Get Files Request] User:", req.user);
+    // console.log("📜 [Get Files Request] Headers:", req.headers);
+    // console.log("📜 [Get Files Request] Params:", req.params);
+    // console.log("📜 [Get Files Request] User:", req.user);
 
     // Use user data from authMiddleware
     const user = req.user;
@@ -642,7 +642,7 @@ export const getFilesByRoom = async (req, res) => {
               Key: message.file.s3Key,
             };
             await s3.send(new HeadObjectCommand(headParams));
-            console.log(`✅ S3 File Exists: ${message.file.s3Key}`);
+            // console.log(`✅ S3 File Exists: ${message.file.s3Key}`);
 
             // Generate presigned URL
             const presignedUrl = await getSignedUrl(
@@ -692,7 +692,7 @@ export const getFilesByRoom = async (req, res) => {
             messageData.file = fileData;
           }
 
-          console.log(`📤 [Processed Message]:`, JSON.stringify(messageData));
+          // console.log(`📤 [Processed Message]:`, JSON.stringify(messageData));
           return messageData;
         } catch (s3Error) {
           console.error(
@@ -734,9 +734,9 @@ export const getFilesByRoom = async (req, res) => {
     // Filter out null entries
     const validMessages = messagesWithUrls.filter((msg) => msg !== null);
 
-    console.log(
-      `📜 [Fetched ${validMessages.length} messages] for room: ${roomId}, User: ${user.userId}, Role: ${role}`
-    );
+    // console.log(
+    //   `📜 [Fetched ${validMessages.length} messages] for room: ${roomId}, User: ${user.userId}, Role: ${role}`
+    // );
     res.status(200).json({
       success: true,
       message: "Messages retrieved successfully",

@@ -24,10 +24,7 @@ export const initializeSocket = (server, allowedOrigins) => {
       origin: allowedOrigins,
       methods: ["GET", "POST", "PUT", "DELETE"],
       credentials: true,
-    },
-    transports: ["websocket", "polling"], // Prioritize WebSocket
-    pingTimeout: 20000, // Increase timeout (20s)
-    pingInterval: 25000, // Heartbeat interval (25s)
+    }
   });
 
   io.use(async (socket, next) => {
@@ -164,9 +161,9 @@ export const initializeSocket = (server, allowedOrigins) => {
       if (role === "admin") socket.user.adminId = idKey.toString();
       if (role === "client") socket.user.clientId = idKey.toString();
 
-      // console.log(
-      //   `[Socket ${socket.id}] Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}`
-      // );
+      console.log(
+      `[Socket ${socket.id}] Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}`
+       );
       next();
     } catch (error) {
       console.error(
@@ -177,6 +174,7 @@ export const initializeSocket = (server, allowedOrigins) => {
   });
 
   io.on("connection", (socket) => {
+    console.log(`[DEBUG] New socket connection: id=${socket.id}, user=`, socket.user);
     const db = getDB();
     const roomCollection = db.collection("rooms");
     const userCollection = db.collection("users");
@@ -199,7 +197,7 @@ export const initializeSocket = (server, allowedOrigins) => {
 
     socket.join(userId);
     socket.join(companyRoom);
-    // console.log(`✅ [Socket Connected] User ID: ${userId}`);
+    console.log(`✅ [Socket Connected] User ID: ${userId}`);
 
     // Emit existing rooms to the connected user
     roomCollection
@@ -219,7 +217,7 @@ export const initializeSocket = (server, allowedOrigins) => {
             users: socket.user.role === "client" ? [] : room.users,
             creator: room.creator,
           });
-          // console.log(`📤 [Room Emitted] ${room.roomId} for ${userId}`);
+           console.log(`📤 [Room Emitted] ${room.roomId} for ${userId}`);
         });
       })
       .catch((err) => {
@@ -299,6 +297,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     }
 
     socket.on("createRoom", async ({ roomName, userIds }) => {
+      console.log(`[DEBUG] createRoom event: userId=${userId}, roomName=${roomName}, userIds=`, userIds);
       console.log(
         `Create Room Attempt: userId=${userId}, role=${socket.user.role}, roomName=${roomName}, userIds=`,
         userIds
@@ -366,16 +365,16 @@ export const initializeSocket = (server, allowedOrigins) => {
             users: targetSocket.user.role === "client" ? [] : allUserIds,
             creator: userId,
           });
-          // console.log(
-          //   `📤 [roomCreated Emitted] to user ${uid} (role=${targetSocket.user.role})`
-          // );
+           console.log(
+             `📤 [roomCreated Emitted] to user ${uid} (role=${targetSocket.user.role})`
+           );
         }
       });
 
-      // console.log(
-      //   "Checking connected sockets for room join:",
-      //   io.sockets.sockets.size
-      // );
+       console.log(
+         "Checking connected sockets for room join:",
+         io.sockets.sockets.size
+       );
       for (const [socketId, client] of io.sockets.sockets) {
         if (allUserIds.includes(client.user?.userId)) {
           client.join(roomId);
@@ -401,9 +400,10 @@ export const initializeSocket = (server, allowedOrigins) => {
       });
       io.to(roomId).emit("newMessage", systemMsg);
 
-      // console.log(`Room Created: roomId=${roomId}, users=`, allUserIds);
+       console.log(`Room Created: roomId=${roomId}, users=`, allUserIds);
     });
     socket.on("sendMessage", async (message, currentRoom) => {
+      console.log(`[DEBUG] sendMessage event: userId=${userId}, currentRoom=${currentRoom}, message=`, message);
       // console.log(
       //   "sendMessage: currentRoom:",
       //   currentRoom,
@@ -468,6 +468,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("editMessage", async ({ messageId, newMessage, currentRoom }) => {
+      console.log(`[DEBUG] editMessage event: userId=${userId}, messageId=${messageId}, newMessage=${newMessage}, currentRoom=${currentRoom}`);
       const roomId = currentRoom;
       // console.log("editMessage: roomId:", roomId);
       if (roomId !== companyRoom && !isUserInRoom(roomId)) {
@@ -485,6 +486,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("deleteMessage", async (messageId, currentRoom) => {
+      console.log(`[DEBUG] deleteMessage event: userId=${userId}, messageId=${messageId}, currentRoom=${currentRoom}`);
       const roomId = currentRoom || getActiveRoom();
       // console.log("deleteMessage: roomId:", roomId);
       if (roomId !== companyRoom && !isUserInRoom(roomId)) {
@@ -502,6 +504,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("typing", ({ roomId, userId }) => {
+      console.log(`[DEBUG] typing event: userId=${userId}, roomId=${roomId}`);
       if (!socket.user || socket.user.userId !== userId) {
         console.warn(
           `Unauthorized typing attempt: userId=${userId}, socket.user=`,
@@ -537,6 +540,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("stopTyping", ({ roomId, userId }) => {
+      console.log(`[DEBUG] stopTyping event: userId=${userId}, roomId=${roomId}`);
       if (!socket.user || socket.user.userId !== userId) {
         console.warn(
           `Unauthorized stopTyping attempt: userId=${userId}, socket.user=`,
@@ -563,6 +567,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("joinRoom", (roomId) => {
+      console.log(`[DEBUG] joinRoom event: userId=${userId}, roomId=${roomId}`);
       const room = rooms.get(roomId);
       if (!room || !room.users.includes(userId)) {
         console.error(
@@ -646,6 +651,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("leaveRoom", async (roomId) => {
+      console.log(`[DEBUG] leaveRoom event: userId=${userId}, roomId=${roomId}`);
       await handleLeaveRoom(socket, roomId);
       const room = await roomCollection.findOne({ roomId });
       if (room) {
@@ -698,11 +704,13 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("deleteRoom", (data) => {
+      console.log(`[DEBUG] deleteRoom event: userId=${userId}, data=`, data);
       handleDeleteRoom(socket, data);
       onlineUsersByRoom.delete(data.roomId);
     });
 
     socket.on("disconnect", () => {
+      console.log(`[DEBUG] disconnect event: userId=${userId}, socketId=${socket.id}`);
       console.log(`❌ [Disconnected] ${userId}`);
       onlineUsersByRoom.forEach((users, roomId) => {
         if (users.has(userId)) {

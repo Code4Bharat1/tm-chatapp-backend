@@ -25,6 +25,9 @@ export const initializeSocket = (server, allowedOrigins) => {
       methods: ["GET", "POST", "PUT", "DELETE"],
       credentials: true,
     },
+    transports: ["websocket", "polling"], // Prioritize WebSocket
+    pingTimeout: 20000, // Increase timeout (20s)
+    pingInterval: 25000, // Heartbeat interval (25s)
   });
 
   io.use(async (socket, next) => {
@@ -72,7 +75,8 @@ export const initializeSocket = (server, allowedOrigins) => {
       }
 
       // Extract and validate ID
-      const idKey = decoded.id || decoded.userId || decoded.clientId || decoded.adminId;
+      const idKey =
+        decoded.id || decoded.userId || decoded.clientId || decoded.adminId;
       if (!idKey) {
         console.error(`[Socket ${socket.id}] Invalid token structure`, decoded);
         return next(new Error("Invalid token structure, ID not found"));
@@ -104,7 +108,7 @@ export const initializeSocket = (server, allowedOrigins) => {
       const projection = {
         position: 1,
         firstName: 1,
-        fullName: 1, 
+        fullName: 1,
         name: 1,
         companyId: 1,
         email: 1,
@@ -147,7 +151,11 @@ export const initializeSocket = (server, allowedOrigins) => {
         companyId: user.companyId?.toString() || decoded.companyId || null,
         position: normalizedPosition,
         firstName:
-          user.firstName || user.name  || user.fullName || decoded.firstName || null,
+          user.firstName ||
+          user.name ||
+          user.fullName ||
+          decoded.firstName ||
+          null,
         companyName: decoded.companyName || null,
         role,
       };

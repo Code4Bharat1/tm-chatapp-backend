@@ -12,7 +12,7 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.PORT || 8080; // Use 8080 as default
+const PORT = process.env.PORT // Use 8080 as default
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",

@@ -11,10 +11,10 @@ const authMiddleware = async (req, res, next) => {
   const companyCollection = db.collection("companyregistrations");
 
   try {
-    let token = null;
-    let decoded = null;
-    let role = null;
-    let secret = null;
+    let token;
+    let decoded;
+    let role;
+    let secret;
 
     // Check for cookies
     if (!req.headers.cookie) {

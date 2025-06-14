@@ -36,7 +36,7 @@ export const initializeSocket = (server, allowedOrigins) => {
 
       // Check for Authorization header
       const authHeader = socket.handshake.headers.authorization;
-      //console.log(`[Socket ${socket.id}] Authorization header:`, authHeader);
+      // console.log(`[Socket ${socket.id}] Authorization header:`, authHeader);
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         console.error(`[Socket ${socket.id}] No valid Authorization header found`);
         return next(new Error("No token provided in Authorization header"));
@@ -44,6 +44,8 @@ export const initializeSocket = (server, allowedOrigins) => {
 
       // Extract token
       const token = authHeader.split(' ')[1];
+
+      // console.log(token)
 
       // Verify token
       let decoded;

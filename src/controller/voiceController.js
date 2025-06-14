@@ -88,10 +88,10 @@ export const uploadVoice = async (req, res) => {
         .json({ error: "Server configuration error: Missing AWS credentials" });
     }
 
-    console.log("📥 [Voice Upload Request] Headers:", req.headers);
-    console.log("📥 [Voice Upload Request] Body:", req.body);
-    console.log("📥 [Voice Upload Request] File:", req.file);
-    console.log("📥 [Voice Upload Request] User:", req.user);
+    // console.log("📥 [Voice Upload Request] Headers:", req.headers);
+    // console.log("📥 [Voice Upload Request] Body:", req.body);
+    // console.log("📥 [Voice Upload Request] File:", req.file);
+    // console.log("📥 [Voice Upload Request] User:", req.user);
 
     // Use user data from authMiddleware
     const user = req.user;
@@ -104,7 +104,7 @@ export const uploadVoice = async (req, res) => {
       "TeamLeader",
     ];
     if (!allowedRoles.includes(user.position)) {
-      console.log("❌ Insufficient permissions:", user.position);
+      // console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ error: "Insufficient position permissions" });
@@ -112,7 +112,7 @@ export const uploadVoice = async (req, res) => {
 
     // Check if a voice file was uploaded
     if (!req.file) {
-      console.log("❌ No voice file uploaded");
+      // console.log("❌ No voice file uploaded");
       return res.status(400).json({ error: "No voice file uploaded" });
     }
 
@@ -129,21 +129,21 @@ export const uploadVoice = async (req, res) => {
       Body: req.file.buffer,
       ContentType: req.file.mimetype,
     };
-    console.log("Uploading to S3 with params:", uploadParams);
+    // console.log("Uploading to S3 with params:", uploadParams);
     await s3.send(new PutObjectCommand(uploadParams));
-    console.log("✅ S3 Voice Upload Successful");
+    // console.log("✅ S3 Voice Upload Successful");
 
     const db = getDB();
     const messageCollection = db.collection("messages");
     const companyCollection = db.collection("companyregistrations");
     const roomId = req.body.roomId || `company_${user.companyId}`;
-    console.log("📤 [Uploading voice to room]:", roomId);
+    // console.log("📤 [Uploading voice to room]:", roomId);
     
     const roomCollection = db.collection("rooms");
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
       if (!room || !room.users.includes(user.userId)) {
-        console.log("❌ Not authorized for room:", roomId);
+        // console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
           .json({ error: "Not authorized to upload to this room" });
@@ -155,9 +155,9 @@ export const uploadVoice = async (req, res) => {
       _id: new ObjectId(user.companyId),
     });
     const companyName = company?.companyInfo?.companyName || "Unknown Company";
-    console.log(
-      `Fetched company name: ${companyName} for companyId: ${user.companyId}`
-    );
+    // console.log(
+    //   `Fetched company name: ${companyName} for companyId: ${user.companyId}`
+    // );
 
     // Save voice file metadata to MongoDB
     const voiceMetadata = {
@@ -251,7 +251,7 @@ export const uploadVoice = async (req, res) => {
           const io = req.app.get("io");
           io.to(roomUserId).emit("newVoice", messageToSend);
         } catch (userError) {
-          console.warn(`⚠️ Could not determine role for user ${roomUserId}:`, userError.message);
+          // console.warn(`⚠️ Could not determine role for user ${roomUserId}:", userError.message);
         }
       }
     } else {
@@ -287,9 +287,9 @@ export const uploadVoice = async (req, res) => {
 
 export const downloadVoice = async (req, res) => {
   try {
-    console.log("📥 [Voice Download Request] Headers:", req.headers);
-    console.log("📥 [Voice Download Request] Params:", req.params);
-    console.log("📥 [Voice Download Request] User:", req.user);
+    // console.log("📥 [Voice Download Request] Headers:", req.headers);
+    // console.log("📥 [Voice Download Request] Params:", req.params);
+    // console.log("📥 [Voice Download Request] User:", req.user);
 
     // Use user data from authMiddleware
     const user = req.user;
@@ -302,7 +302,7 @@ export const downloadVoice = async (req, res) => {
       "TeamLeader",
     ];
     if (!allowedRoles.includes(user.position)) {
-      console.log("❌ Insufficient permissions:", user.position);
+      // console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ error: "Insufficient position permissions" });
@@ -311,7 +311,7 @@ export const downloadVoice = async (req, res) => {
     // Get voiceId from URL parameter
     const { voiceId } = req.params;
     if (!voiceId) {
-      console.log("❌ No voiceId provided");
+      // console.log("❌ No voiceId provided");
       return res.status(400).json({ error: "voiceId is required" });
     }
 
@@ -326,7 +326,7 @@ export const downloadVoice = async (req, res) => {
     });
 
     if (!voiceMetadata) {
-      console.log("❌ Voice file not found in database:", voiceId);
+      // console.log("❌ Voice file not found in database:", voiceId);
       return res.status(404).json({ error: "Voice file not found" });
     }
 
@@ -336,7 +336,7 @@ export const downloadVoice = async (req, res) => {
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
       if (!room || !room.users.includes(user.userId)) {
-        console.log("❌ Not authorized for room:", roomId);
+        // console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
           .json({ error: "Not authorized to access this voice file" });
@@ -345,7 +345,7 @@ export const downloadVoice = async (req, res) => {
       roomId.startsWith("company_") &&
       roomId !== `company_${user.companyId}`
     ) {
-      console.log("❌ Not authorized for company room:", roomId);
+      // console.log("❌ Not authorized for company room:", roomId);
       return res
         .status(403)
         .json({ error: "Not authorized to access this voice file" });
@@ -370,9 +370,9 @@ export const downloadVoice = async (req, res) => {
     // Stream the file
     Body.pipe(res);
 
-    console.log(
-      `📤 [Downloading voice file] ${voiceId} as ${voiceMetadata.voice.originalName}`
-    );
+    // console.log(
+    //   `📤 [Downloading voice file] ${voiceId} as ${voiceMetadata.voice.originalName}`
+    // );
   } catch (error) {
     console.error("❌ [Voice Download Error]:", error.message, error.stack);
     res.status(500).json({
@@ -383,9 +383,9 @@ export const downloadVoice = async (req, res) => {
 
 export const deleteVoice = async (req, res) => {
   try {
-    console.log("🗑️ [Voice Delete Request] Headers:", req.headers);
-    console.log("🗑️ [Voice Delete Request] Params:", req.params);
-    console.log("🗑️ [Voice Delete Request] User:", req.user);
+    // console.log("🗑️ [Voice Delete Request] Headers:", req.headers);
+    // console.log("🗑️ [Voice Delete Request] Params:", req.params);
+    // console.log("🗑️ [Voice Delete Request] User:", req.user);
 
     // Use user data from authMiddleware
     const user = req.user;
@@ -398,7 +398,7 @@ export const deleteVoice = async (req, res) => {
       "TeamLeader",
     ];
     if (!allowedRoles.includes(user.position)) {
-      console.log("❌ Insufficient permissions:", user.position);
+      // console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ error: "Insufficient position permissions" });
@@ -407,7 +407,7 @@ export const deleteVoice = async (req, res) => {
     // Get voiceId from URL parameter
     const { voiceId } = req.params;
     if (!voiceId) {
-      console.log("❌ No voiceId provided");
+      // console.log("❌ No voiceId provided");
       return res.status(400).json({ error: "voiceId is required" });
     }
 
@@ -422,7 +422,7 @@ export const deleteVoice = async (req, res) => {
     });
 
     if (!voiceMetadata) {
-      console.log("❌ Voice not found in database:", voiceId);
+      // console.log("❌ Voice not found in database:", voiceId);
       return res.status(404).json({ error: "Voice not found" });
     }
 
@@ -432,7 +432,7 @@ export const deleteVoice = async (req, res) => {
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
       if (!room || !room.users.includes(user.userId)) {
-        console.log("❌ Not authorized for room:", roomId);
+        // console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
           .json({ error: "Not authorized to delete this voice" });
@@ -441,7 +441,7 @@ export const deleteVoice = async (req, res) => {
       roomId.startsWith("company_") &&
       roomId !== `company_${user.companyId}`
     ) {
-      console.log("❌ Not authorized for company room:", roomId);
+      // console.log("❌ Not authorized for company room:", roomId);
       return res
         .status(403)
         .json({ error: "Not authorized to delete this voice" });
@@ -453,11 +453,11 @@ export const deleteVoice = async (req, res) => {
         Bucket: process.env.AWS_BUCKET_NAME,
         Key: voiceMetadata.voice.s3Key,
       };
-      console.log("Deleting from S3 with params:", deleteParams);
+      // console.log("Deleting from S3 with params:", deleteParams);
       await s3.send(new DeleteObjectCommand(deleteParams));
-      console.log("✅ S3 Delete Successful");
+      // console.log("✅ S3 Delete Successful");
     } else {
-      console.log("⚠️ No S3 key found, skipping S3 deletion");
+      // console.log("⚠️ No S3 key found, skipping S3 deletion");
     }
 
     // Delete from MongoDB
@@ -475,7 +475,7 @@ export const deleteVoice = async (req, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    console.log(`🗑️ [Deleted voice] ${voiceId}`);
+    // console.log(`🗑️ [Deleted voice] ${voiceId}`);
     res.status(200).json({ message: "Voice deleted successfully" });
   } catch (error) {
     console.error("❌ [Voice Delete Error]:", error.message, error.stack);
@@ -488,16 +488,16 @@ export const deleteVoice = async (req, res) => {
 export const deleteS3VoicesByRoom = async (adata) => {
   try {
     const { user, roomId } = adata;
-    console.log("🗑️ [Delete S3 Voices] User:", user);
-    console.log("🗑️ [Delete S3 Voices] Room ID:", roomId);
+    // console.log("🗑️ [Delete S3 Voices] User:", user);
+    // console.log("🗑️ [Delete S3 Voices] Room ID:", roomId);
 
     // Validate inputs
     if (!user || !user.userId || !user.companyId) {
-      console.log("❌ Missing user data");
+      // console.log("❌ Missing user data");
       throw new Error("User authentication required: missing userId or companyId");
     }
     if (!roomId || typeof roomId !== "string" || roomId.trim() === "") {
-      console.log("❌ Invalid roomId");
+      // console.log("❌ Invalid roomId");
       throw new Error("Room ID is required and must be a non-empty string");
     }
 
@@ -508,15 +508,15 @@ export const deleteS3VoicesByRoom = async (adata) => {
     // Verify room access
     const room = await roomCollection.findOne({ roomId });
     if (!room) {
-      console.log("❌ Room not found:", roomId);
+      // console.log("❌ Room not found:", roomId);
       throw new Error(`Room not found: ${roomId}`);
     }
     if (String(room.companyId) !== String(user.companyId)) {
-      console.log("❌ User not authorized for room:", roomId);
+      // console.log("❌ User not authorized for room:", roomId);
       throw new Error("User not authorized for this room’s company");
     }
     if (roomId.startsWith("room_") && !room.users.includes(user.userId)) {
-      console.log("❌ User not authorized for room:", roomId);
+      // console.log("❌ User not authorized for room:", roomId);
       throw new Error("User not authorized for this room");
     }
 
@@ -527,9 +527,9 @@ export const deleteS3VoicesByRoom = async (adata) => {
         voice: { $exists: true },
       })
       .toArray();
-    console.log(
-      `🔍 Found ${messages.length} messages with voice field for room ${roomId}`
-    );
+    // console.log(
+    //   `🔍 Found ${messages.length} messages with voice field for room ${roomId}`
+    // );
 
     // Collect S3 keys
     const voiceKeys = messages
@@ -540,7 +540,7 @@ export const deleteS3VoicesByRoom = async (adata) => {
           typeof message.voice.s3Key === "string"
       )
       .map((message) => ({ Key: message.voice.s3Key }));
-    console.log(`🔍 Collected ${voiceKeys.length} voice S3 keys`);
+    // console.log(`🔍 Collected ${voiceKeys.length} voice S3 keys`);
 
     // Delete voice files from S3
     let deletedCount = 0;
@@ -552,12 +552,12 @@ export const deleteS3VoicesByRoom = async (adata) => {
           Quiet: false,
         },
       };
-      console.log("Deleting S3 voice files:", deleteParams);
+      // console.log("Deleting S3 voice files:", deleteParams);
       const result = await s3.send(new DeleteObjectsCommand(deleteParams));
       deletedCount = result.Deleted ? result.Deleted.length : voiceKeys.length;
-      console.log(
-        `✅ Deleted ${deletedCount} S3 voice files for room ${roomId}`
-      );
+      // console.log(
+      //   `✅ Deleted ${deletedCount} S3 voice files for room ${roomId}`
+      // );
       if (result.Errors && result.Errors.length > 0) {
         console.error("❌ S3 deletion errors:", result.Errors);
       }
@@ -568,7 +568,7 @@ export const deleteS3VoicesByRoom = async (adata) => {
         voice: { $exists: true },
       });
     } else {
-      console.log(`No valid S3 voice files to delete for room ${roomId}`);
+      // console.log(`No valid S3 voice files to delete for room ${roomId}`);
     }
 
     // Emit socket event
@@ -580,7 +580,7 @@ export const deleteS3VoicesByRoom = async (adata) => {
         timestamp: new Date().toISOString(),
       });
     } else {
-      console.warn("Socket.io instance not found in adata");
+      // console.warn("Socket.io instance not found in adata");
     }
 
     return { success: true, deletedCount };
@@ -607,7 +607,7 @@ export const getAllCompanyVoices = async (req, res) => {
       "TeamLeader",
     ];
     if (!allowedRoles.includes(user.position)) {
-      console.log("❌ Insufficient permissions:", user.position);
+      // console.log("❌ Insufficient permissions:", user.position);
       return res
         .status(403)
         .json({ success: false, error: "Insufficient position permissions" });
@@ -616,7 +616,7 @@ export const getAllCompanyVoices = async (req, res) => {
     // Get roomId from URL parameter
     const { roomId } = req.params;
     if (!roomId) {
-      console.log("❌ No roomId provided");
+      // console.log("❌ No roomId provided");
       return res
         .status(400)
         .json({ success: false, error: "roomId is required" });
@@ -633,13 +633,13 @@ export const getAllCompanyVoices = async (req, res) => {
     if (roomId.startsWith("room_")) {
       const room = await roomCollection.findOne({ roomId });
       if (!room) {
-        console.log("❌ Room not found:", roomId);
+        // console.log("❌ Room not found:", roomId);
         return res
           .status(404)
           .json({ success: false, error: "Room not found" });
       }
       if (!room.users.includes(user.userId)) {
-        console.log("❌ Not authorized for room:", roomId);
+        // console.log("❌ Not authorized for room:", roomId);
         return res
           .status(403)
           .json({ success: false, error: "Not authorized to access this room" });
@@ -648,7 +648,7 @@ export const getAllCompanyVoices = async (req, res) => {
       roomId.startsWith("company_") &&
       roomId !== `company_${user.companyId}`
     ) {
-      console.log("❌ Not authorized for company room:", roomId);
+      // console.log("❌ Not authorized for company room:", roomId);
       return res
         .status(403)
         .json({ success: false, error: "Not authorized to access this room" });
@@ -676,7 +676,7 @@ export const getAllCompanyVoices = async (req, res) => {
     }
 
     if (!role) {
-      console.warn(`⚠️ [Validation Failed] User not found: ${user.userId}`);
+      // console.warn(`⚠️ [Validation Failed] User not found: ${user.userId}`);
       return res.status(404).json({ message: "User not found" });
     }
 
@@ -691,9 +691,9 @@ export const getAllCompanyVoices = async (req, res) => {
       .sort({ timestamp: -1 })
       .toArray();
 
-    console.log(
-      `📜 [Found ${voiceMessages.length} voice messages in MongoDB] for room: ${roomId}`
-    );
+    // console.log(
+    //   `📜 [Found ${voiceMessages.length} voice messages in MongoDB] for room: ${roomId}`
+    // );
 
     if (voiceMessages.length === 0) {
       return res.status(200).json({
@@ -707,7 +707,7 @@ export const getAllCompanyVoices = async (req, res) => {
     const messagesWithDetails = await Promise.all(
       voiceMessages.map(async (msg) => {
         if (!msg.voice || !msg.voice.s3Key) {
-          console.warn(`⚠️ [Invalid Voice Metadata] Message ID: ${msg._id}`);
+          // console.warn(`⚠️ [Invalid Voice Metadata] Message ID: ${msg._id}`);
           return null;
         }
 

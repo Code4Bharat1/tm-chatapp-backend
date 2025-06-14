@@ -252,6 +252,16 @@ export const getUsersByCompany = async (req, res) => {
         .json({ message: "Invalid user data: companyId not found" });
     }
 
+    // Determine the logged-in user's ID based on role
+    let loggedInUserId;
+    if (req.user.role === "user") {
+      loggedInUserId = req.user.userId;
+    } else if (req.user.role === "admin") {
+      loggedInUserId = req.user.adminId;
+    } else if (req.user.role === "client") {
+      loggedInUserId = req.user.clientId;
+    }
+
     // Define projection for user data
     const projection = {
       _id: 1,
@@ -277,18 +287,20 @@ export const getUsersByCompany = async (req, res) => {
       .find({ companyId }, { projection })
       .toArray();
 
-    // Combine and format results
+    // Combine and format results, excluding the logged-in user
     const allUsers = [
       ...usersFromUsers.map((user) => ({ ...user, role: "user" })),
       ...usersFromEmployees.map((user) => ({ ...user, role: "admin" })),
       ...usersFromClients.map((user) => ({ ...user, role: "client" })),
-    ].map((user) => ({
-      userId: user._id.toString(),
-      firstName: user.firstName || user.name || user.fullName || "Anonymous",
-      email: user.email || null,
-      position: user.position || user.role || null,
-      role: user.role,
-    }));
+    ]
+      .filter((user) => String(user._id) !== String(loggedInUserId))
+      .map((user) => ({
+        userId: user._id.toString(),
+        firstName: user.firstName || user.name || user.fullName || "Anonymous",
+        email: user.email || null,
+        position: user.position || user.role || null,
+        role: user.role,
+      }));
 
     return res.status(200).json({
       success: true,
@@ -513,15 +525,15 @@ export const handleDeleteRoom = async (req, res) => {
     }
 
     // Restrict to higher privilege roles
-    const allowedRoles = ["CEO", "Manager", "HR"];
-    if (!allowedRoles.includes(req.user.position)) {
-      console.warn(
-        `Insufficient permissions for user ${req.user.userId}: ${req.user.position}`
-      );
-      return res
-        .status(403)
-        .json({ error: "Insufficient position permissions" });
-    }
+    // const allowedRoles = ["CEO", "Manager", "HR"];
+    // if (!allowedRoles.includes(req.user.position)) {
+    //   console.warn(
+    //     `Insufficient permissions for user ${req.user.userId}: ${req.user.position}`
+    //   );
+    //   return res
+    //     .status(403)
+    //     .json({ error: "Insufficient position permissions" });
+    // }
 
     // Get roomId from URL parameter
     const { roomId } = req.params;
@@ -544,6 +556,15 @@ export const handleDeleteRoom = async (req, res) => {
         `Unauthorized company access for user ${req.user.userId}: ${room.companyId}`
       );
       return res.status(403).json({ error: "Not authorized for this company" });
+    }
+    // Check if the user is the creator of the room
+    if (String(room.creator) !== String(req.user.userId)) {
+      console.warn(
+        `User ${req.user.userId} is not the creator of room ${roomId}`
+      );
+      return res
+        .status(403)
+        .json({ error: "Only the room creator can delete this room" });
     }
 
     // Delete all S3 voice files for the room

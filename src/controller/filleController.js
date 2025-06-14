@@ -80,10 +80,10 @@ export const uploadFile = async (req, res) => {
         .json({ error: "Server configuration error: Missing AWS credentials" });
     }
 
-    console.log("📥 [Upload Request] Headers:", req.headers);
-    console.log("📥 [Upload Request] Body:", req.body);
-    console.log("📥 [Upload Request] File:", req.file);
-    console.log("📥 [Upload Request] User:", req.user);
+    // console.log("📥 [Upload Request] Headers:", req.headers);
+    // console.log("📥 [Upload Request] Body:", req.body);
+    // console.log("📥 [Upload Request] File:", req.file);
+    // console.log("📥 [Upload Request] User:", req.user);
 
     // Use user data from authMiddleware
     const user = req.user;
@@ -239,7 +239,7 @@ export const uploadFile = async (req, res) => {
           // Send to specific user
           io.to(roomUserId).emit("newFile", messageToSend);
         } catch (userError) {
-          console.warn(`⚠️ Could not determine role for user ${roomUserId}:`, userError.message);
+          console.warn(`⚠️ Could not determine role for user ${roomUserId}:", userError.message`);
         }
       }
     } else {
@@ -261,9 +261,9 @@ export const uploadFile = async (req, res) => {
 
 export const downloadFile = async (req, res) => {
   try {
-    console.log("📥 [Download Request] Headers:", req.headers);
-    console.log("📥 [Download Request] Params:", req.params);
-    console.log("📥 [Download Request] User:", req.user);
+    // console.log("📥 [Download Request] Headers:", req.headers);
+    // console.log("📥 [Download Request] Params:", req.params);
+    // console.log("📥 [Download Request] User:", req.user);
 
     // Use user data from authMiddleware
     const user = req.user;
@@ -338,9 +338,9 @@ export const downloadFile = async (req, res) => {
 
     Body.pipe(res);
 
-    console.log(
-      `📤 [Downloading file] ${fileID} as ${fileMetadata.file.originalName}`
-    );
+    // console.log(
+    //   `📤 [Downloading file] ${fileID} as ${fileMetadata.file.originalName}`
+    // );
   } catch (error) {
     console.error("❌ [Download Error]:", error.message, error.stack, error);
     res.status(500).json({
@@ -351,9 +351,9 @@ export const downloadFile = async (req, res) => {
 
 export const deleteFile = async (req, res) => {
   try {
-    console.log("🗑️ [Delete Request] Headers:", req.headers);
-    console.log("🗑️ [Delete Request] Params:", req.params);
-    console.log("🗑️ [Delete Request] User:", req.user);
+    // console.log("🗑️ [Delete Request] Headers:", req.headers);
+    // console.log("🗑️ [Delete Request] Params:", req.params);
+    // console.log("🗑️ [Delete Request] User:", req.user);
 
     // Use user data from authMiddleware
     const user = req.user;
@@ -431,7 +431,7 @@ export const deleteFile = async (req, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    console.log(`🗑️ [Deleted file] ${fileID}`);
+    // console.log(`🗑️ [Deleted file] ${fileID}`);
     res.status(200).json({ message: "File deleted successfully" });
   } catch (error) {
     console.error("❌ [Delete Error]:", error.message, error.stack, error);
@@ -444,8 +444,8 @@ export const deleteFile = async (req, res) => {
 export const deleteS3FilesByRoom = async (adata) => {
   try {
     const { user, roomId } = adata;
-    console.log("🗑️ [Delete S3 Files By Room] User:", user);
-    console.log("🗑️ [Delete S3 Files By Room] Room ID:", roomId);
+    // console.log("🗑️ [Delete S3 Files By Room] User:", user);
+    // console.log("🗑️ [Delete S3 Files By Room] Room ID:", roomId);
 
     // Validate inputs
     if (!user || !user.userId || !user.companyId) {

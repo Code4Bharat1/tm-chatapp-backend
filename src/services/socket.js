@@ -1,6 +1,5 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
-import cookie from "cookie";
 import dotenv from "dotenv";
 import {
   handleSendMessage,
@@ -24,56 +23,43 @@ export const initializeSocket = (server, allowedOrigins) => {
       origin: allowedOrigins,
       methods: ["GET", "POST", "PUT", "DELETE"],
       credentials: true,
-    }
+    },
   });
 
   io.use(async (socket, next) => {
     try {
       // Validate environment variable
       if (!process.env.JWT_SECRET) {
-        console.error("JWT_SECRET not set");
+        console.error(`[Socket ${socket.id}] JWT_SECRET not set`);
         return next(new Error("Server configuration error"));
       }
 
-      // Parse cookies
-      const cookieHeader = socket.handshake.headers.cookie;
-      if (typeof cookieHeader !== "string") {
-        console.error(`[Socket ${socket.id}] Invalid cookie header`);
-        return next(new Error("Invalid cookie header"));
+      // Check for Authorization header
+      const authHeader = socket.handshake.headers.authorization;
+      //console.log(`[Socket ${socket.id}] Authorization header:`, authHeader);
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        console.error(`[Socket ${socket.id}] No valid Authorization header found`);
+        return next(new Error("No token provided in Authorization header"));
       }
 
-      const cookies = cookie.parse(cookieHeader);
-      const tokens = {
-        user: cookies.token,
-        admin: cookies.admintoken,
-        client: cookies.clientToken,
-      };
+      // Extract token
+      const token = authHeader.split(' ')[1];
 
       // Verify token
-      let decoded = null;
-      let role = null;
-      const tokenMap = [
-        { token: tokens.admin, role: "admin" },
-        { token: tokens.user, role: "user" },
-        { token: tokens.client, role: "client" },
-      ];
-
-      for (const { token, role: tokenRole } of tokenMap) {
-        if (token) {
-          decoded = jwt.verify(token, process.env.JWT_SECRET);
-          role = tokenRole;
-          break;
-        }
-      }
-
-      if (!decoded || !role) {
-        console.error(`[Socket ${socket.id}] No valid token found`);
-        return next(new Error("Authentication token missing"));
+      let decoded;
+      try {
+        decoded = jwt.verify(token, process.env.JWT_SECRET);
+      } catch (error) {
+        console.error(`[Socket ${socket.id}] Token verification error: ${error.message}`);
+        return next(new Error(
+          error.name === "TokenExpiredError"
+            ? "Token expired"
+            : "Invalid token"
+        ));
       }
 
       // Extract and validate ID
-      const idKey =
-        decoded.id || decoded.userId || decoded.clientId || decoded.adminId;
+      const idKey = decoded.id || decoded.userId || decoded.clientId || decoded.adminId;
       if (!idKey) {
         console.error(`[Socket ${socket.id}] Invalid token structure`, decoded);
         return next(new Error("Invalid token structure, ID not found"));
@@ -85,6 +71,21 @@ export const initializeSocket = (server, allowedOrigins) => {
       } catch (err) {
         console.error(`[Socket ${socket.id}] Invalid ObjectId: ${idKey}`);
         return next(new Error("Invalid user ID format"));
+      }
+
+      // Map position to role
+      let role = decoded.role || decoded.userRole || decoded.type || "Employee";
+      const position = decoded.position?.toLowerCase();
+      if (["employee", "manager", "hr"].includes(position)) {
+        role = "user";
+      } else if (position === "admin") {
+        role = "admin";
+      }
+
+      // Validate role
+      if (!['user', 'admin', 'client'].includes(role)) {
+        console.error(`[Socket ${socket.id}] Invalid role in token payload: ${role}`);
+        return next(new Error("Invalid role in token, authorization denied"));
       }
 
       // Access database
@@ -162,8 +163,8 @@ export const initializeSocket = (server, allowedOrigins) => {
       if (role === "client") socket.user.clientId = idKey.toString();
 
       console.log(
-      `[Socket ${socket.id}] Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}`
-       );
+        `[Socket ${socket.id}] Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}`
+      );
       next();
     } catch (error) {
       console.error(
@@ -174,7 +175,7 @@ export const initializeSocket = (server, allowedOrigins) => {
   });
 
   io.on("connection", (socket) => {
-    console.log(`[DEBUG] New socket connection: id=${socket.id}, user=`, socket.user);
+    // console.log(`[DEBUG] New socket connection: id=${socket.id}, user=`, socket.user);
     const db = getDB();
     const roomCollection = db.collection("rooms");
     const userCollection = db.collection("users");
@@ -182,6 +183,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     const clientCollection = db.collection("clients");
     const messageCollection = db.collection("messages");
     const companyCollection = db.collection("companies");
+
     let userId = null;
     if (socket.user.role === "user") {
       userId = socket.user.userId;
@@ -193,18 +195,23 @@ export const initializeSocket = (server, allowedOrigins) => {
       console.log("Null");
     }
     const companyId = socket.user.companyId;
-    const companyRoom = `company_${companyId}`;
 
+    // Join user's personal room for direct notifications
     socket.join(userId);
-    socket.join(companyRoom);
     console.log(`✅ [Socket Connected] User ID: ${userId}`);
 
-    // Emit existing rooms to the connected user
+    // Emit existing rooms to the connected user, excluding any default company chat
     roomCollection
       .find({ users: userId })
       .toArray()
       .then((userRooms) => {
+        console.log(`[DEBUG] Fetched rooms for user ${userId}:`, userRooms.map(r => ({ roomId: r.roomId, roomName: r.roomName })));
         userRooms.forEach((room) => {
+          // Skip rooms that resemble a default company chat
+          if (room.roomName === `Company ${companyId} Chat`) {
+            console.warn(`[Socket ${socket.id}] Skipping default room: ${room.roomName}`);
+            return;
+          }
           rooms.set(room.roomId, {
             roomName: room.roomName,
             users: room.users,
@@ -217,7 +224,7 @@ export const initializeSocket = (server, allowedOrigins) => {
             users: socket.user.role === "client" ? [] : room.users,
             creator: room.creator,
           });
-           console.log(`📤 [Room Emitted] ${room.roomId} for ${userId}`);
+          console.log(`📤 [Room Emitted] ${room.roomId} for ${userId}`);
         });
       })
       .catch((err) => {
@@ -226,9 +233,12 @@ export const initializeSocket = (server, allowedOrigins) => {
       });
 
     function getActiveRoom() {
-      return (
-        [...socket.rooms].find((r) => r.startsWith("room_")) || companyRoom
-      );
+      const userRooms = [...socket.rooms].filter((r) => r.startsWith("room_"));
+      if (userRooms.length === 0) {
+        console.warn(`[Socket ${socket.id}] No active rooms found for user ${userId}`);
+        return null;
+      }
+      return userRooms[0];
     }
 
     function isUserInRoom(roomId) {
@@ -237,7 +247,6 @@ export const initializeSocket = (server, allowedOrigins) => {
 
     async function validateCompanyUsers(userIds) {
       console.log("Validating user IDs:", userIds, "for companyId:", companyId);
-      // Ensure all userIds are strings and convert to ObjectId for querying
       const validObjectIds = userIds
         .filter((id) => typeof id === "string" && ObjectId.isValid(id))
         .map((id) => new ObjectId(id));
@@ -251,7 +260,6 @@ export const initializeSocket = (server, allowedOrigins) => {
         return [];
       }
 
-      // Query all relevant collections
       const validUsers = await userCollection
         .find({
           _id: { $in: validObjectIds },
@@ -285,7 +293,6 @@ export const initializeSocket = (server, allowedOrigins) => {
         validClients.map((u) => u._id.toString())
       );
 
-      // Combine all valid user IDs from the three collections
       const validUserIds = [
         ...validUsers,
         ...validEmployees,
@@ -293,16 +300,11 @@ export const initializeSocket = (server, allowedOrigins) => {
       ].map((u) => u._id.toString());
 
       console.log("All valid user IDs:", validUserIds);
-      return validUserIds; // Return the combined list of valid IDs
+      return validUserIds;
     }
 
     socket.on("createRoom", async ({ roomName, userIds }) => {
-      console.log(`[DEBUG] createRoom event: userId=${userId}, roomName=${roomName}, userIds=`, userIds);
-      console.log(
-        `Create Room Attempt: userId=${userId}, role=${socket.user.role}, roomName=${roomName}, userIds=`,
-        userIds
-      );
-
+      // console.log(`[DEBUG] createRoom event: userId=${userId}, roomName=${roomName}, userIds=`, userIds);
       if (
         !roomName?.trim() ||
         !Array.isArray(userIds) ||
@@ -312,20 +314,23 @@ export const initializeSocket = (server, allowedOrigins) => {
         return socket.emit("errorMessage", "Invalid room name or users.");
       }
 
+      // Prevent creation of rooms with default company chat name
+      if (roomName.trim() === `Company ${companyId} Chat`) {
+        console.error(`[Socket ${socket.id}] Attempt to create restricted room name: ${roomName}`);
+        return socket.emit("errorMessage", "Room name is reserved and cannot be used.");
+      }
+
       const validUserIds = await validateCompanyUsers(userIds);
       console.log("Validation result:", {
         inputUserIds: userIds,
         validUserIds,
       });
 
-      // Check if all provided userIds are valid
       const invalidUserIds = userIds.filter((id) => !validUserIds.includes(id));
       if (invalidUserIds.length > 0) {
         console.error(
           "Validation failed: Some users do not belong to company",
-          {
-            invalidUserIds,
-          }
+          { invalidUserIds }
         );
         return socket.emit(
           "errorMessage",
@@ -365,20 +370,15 @@ export const initializeSocket = (server, allowedOrigins) => {
             users: targetSocket.user.role === "client" ? [] : allUserIds,
             creator: userId,
           });
-           console.log(
-             `📤 [roomCreated Emitted] to user ${uid} (role=${targetSocket.user.role})`
-           );
+          console.log(
+            `📤 [roomCreated Emitted] to user ${uid} (role=${targetSocket.user.role})`
+          );
         }
       });
 
-       console.log(
-         "Checking connected sockets for room join:",
-         io.sockets.sockets.size
-       );
       for (const [socketId, client] of io.sockets.sockets) {
         if (allUserIds.includes(client.user?.userId)) {
           client.join(roomId);
-          // console.log(`Socket ${socketId} joined room ${roomId}`);
         }
       }
 
@@ -400,34 +400,29 @@ export const initializeSocket = (server, allowedOrigins) => {
       });
       io.to(roomId).emit("newMessage", systemMsg);
 
-       console.log(`Room Created: roomId=${roomId}, users=`, allUserIds);
+      console.log(`Room Created: roomId=${roomId}, users=`, allUserIds);
     });
-    socket.on("sendMessage", async (message, currentRoom) => {
-      console.log(`[DEBUG] sendMessage event: userId=${userId}, currentRoom=${currentRoom}, message=`, message);
-      // console.log(
-      //   "sendMessage: currentRoom:",
-      //   currentRoom,
-      //   "message:",
-      //   message
-      // );
-      const roomId = currentRoom || getActiveRoom();
-      // console.log("sendMessage: roomId:", roomId);
 
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) {
+    socket.on("sendMessage", async (message, currentRoom) => {
+      // console.log(`[DEBUG] sendMessage event: userId=${userId}, currentRoom=${currentRoom}, message=`, message);
+      if (!currentRoom) {
+        console.error(`[Socket ${socket.id}] No room specified for message`);
+        return socket.emit("errorMessage", "No room specified.");
+      }
+
+      if (!isUserInRoom(currentRoom)) {
         console.error(
-          `Unauthorized room access: userId=${userId}, roomId=${roomId}`
+          `Unauthorized room access: userId=${userId}, roomId=${currentRoom}`
         );
         return socket.emit("errorMessage", "Unauthorized room access.");
       }
 
       try {
-        // Save message and get the saved message object
-        const savedMessage = await handleSendMessage(socket, message, roomId);
+        const savedMessage = await handleSendMessage(socket, message, currentRoom);
         if (!savedMessage) {
           throw new Error("handleSendMessage returned no message");
         }
 
-        // Construct message versions
         const baseMessage = {
           _id: savedMessage._id,
           userId: savedMessage.userId,
@@ -446,11 +441,10 @@ export const initializeSocket = (server, allowedOrigins) => {
               : savedMessage.companyName,
         };
 
-        // Emit appropriate message version to each user in the room
         console.log(
-          `Emitting newMessage for roomId=${roomId}, sender userId=${userId}, role=${socket.user.role}`
+          `Emitting newMessage for roomId=${currentRoom}, sender userId=${userId}, role=${socket.user.role}`
         );
-        for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
+        for (const socketId of io.sockets.adapter.rooms.get(currentRoom) || []) {
           const client = io.sockets.sockets.get(socketId);
           if (client) {
             const messageToEmit =
@@ -468,12 +462,15 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("editMessage", async ({ messageId, newMessage, currentRoom }) => {
-      console.log(`[DEBUG] editMessage event: userId=${userId}, messageId=${messageId}, newMessage=${newMessage}, currentRoom=${currentRoom}`);
-      const roomId = currentRoom;
-      // console.log("editMessage: roomId:", roomId);
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) {
+      // console.log(`[DEBUG] editMessage event: userId=${userId}, messageId=${messageId}, newMessage=${newMessage}, currentRoom=${currentRoom}`);
+      if (!currentRoom) {
+        console.error(`[Socket ${socket.id}] No room specified for edit`);
+        return socket.emit("errorMessage", "No room specified.");
+      }
+
+      if (!isUserInRoom(currentRoom)) {
         console.error(
-          `Unauthorized edit attempt: userId=${userId}, roomId=${roomId}`
+          `Unauthorized edit attempt: userId=${userId}, roomId=${currentRoom}`
         );
         return socket.emit("errorMessage", "Unauthorized edit attempt.");
       }
@@ -486,12 +483,15 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("deleteMessage", async (messageId, currentRoom) => {
-      console.log(`[DEBUG] deleteMessage event: userId=${userId}, messageId=${messageId}, currentRoom=${currentRoom}`);
-      const roomId = currentRoom || getActiveRoom();
-      // console.log("deleteMessage: roomId:", roomId);
-      if (roomId !== companyRoom && !isUserInRoom(roomId)) {
+      // console.log(`[DEBUG] deleteMessage event: userId=${userId}, messageId=${messageId}, currentRoom=${currentRoom}`);
+      if (!currentRoom) {
+        console.error(`[Socket ${socket.id}] No room specified for delete`);
+        return socket.emit("errorMessage", "No room specified.");
+      }
+
+      if (!isUserInRoom(currentRoom)) {
         console.error(
-          `Unauthorized delete attempt: userId=${userId}, roomId=${roomId}`
+          `Unauthorized delete attempt: userId=${userId}, roomId=${currentRoom}`
         );
         return socket.emit("errorMessage", "Unauthorized delete attempt.");
       }
@@ -504,7 +504,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("typing", ({ roomId, userId }) => {
-      console.log(`[DEBUG] typing event: userId=${userId}, roomId=${roomId}`);
+      // console.log(`[DEBUG] typing event: userId=${userId}, roomId=${roomId}`);
       if (!socket.user || socket.user.userId !== userId) {
         console.warn(
           `Unauthorized typing attempt: userId=${userId}, socket.user=`,
@@ -520,10 +520,8 @@ export const initializeSocket = (server, allowedOrigins) => {
         return;
       }
 
-      // Emit userTyping only to non-client users in the room, excluding the typer
       for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
         if (socketId !== socket.id) {
-          // Exclude the typer
           const client = io.sockets.sockets.get(socketId);
           if (client && client.user.role !== "client") {
             client.emit("userTyping", {
@@ -531,16 +529,13 @@ export const initializeSocket = (server, allowedOrigins) => {
               username: socket.user.firstName || "Anonymous",
               roomId,
             });
-            // console.log(
-            //   `📤 [userTyping Emitted] to socket ${socketId} (role=${client.user.role})`
-            // );
           }
         }
       }
     });
 
     socket.on("stopTyping", ({ roomId, userId }) => {
-      console.log(`[DEBUG] stopTyping event: userId=${userId}, roomId=${roomId}`);
+      // console.log(`[DEBUG] stopTyping event: userId=${userId}, roomId=${roomId}`);
       if (!socket.user || socket.user.userId !== userId) {
         console.warn(
           `Unauthorized stopTyping attempt: userId=${userId}, socket.user=`,
@@ -556,7 +551,6 @@ export const initializeSocket = (server, allowedOrigins) => {
         return;
       }
 
-      // Emit userStoppedTyping to all users in the room, excluding the typer
       socket.to(roomId).emit("userStoppedTyping", {
         userId: socket.user.userId,
         roomId,
@@ -567,7 +561,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("joinRoom", (roomId) => {
-      console.log(`[DEBUG] joinRoom event: userId=${userId}, roomId=${roomId}`);
+      // console.log(`[DEBUG] joinRoom event: userId=${userId}, roomId=${roomId}`);
       const room = rooms.get(roomId);
       if (!room || !room.users.includes(userId)) {
         console.error(
@@ -591,18 +585,12 @@ export const initializeSocket = (server, allowedOrigins) => {
       });
 
       const onlineUsers = [...onlineUsersByRoom.get(roomId).values()];
-      // console.log(
-      //   `Online Users Update for roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
-      // );
-
-      // Emit to the joining user
       socket.emit("joinConfirmation", {
         room: roomId,
         roomName: room.roomName,
         users: socket.user.role === "client" ? [] : onlineUsers,
       });
 
-      // Emit userJoined only to non-client users in the room
       for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
         const client = io.sockets.sockets.get(socketId);
         if (
@@ -612,19 +600,14 @@ export const initializeSocket = (server, allowedOrigins) => {
         ) {
           client.emit("userJoined", {
             user: { userId, username: socket.user.firstName || "Anonymous" },
-            roomId,
+            roomId: roomId,
           });
-          // console.log(
-          //   `📤 [userJoined Emitted] to socket ${socketId} (role=${client.user.role})`
-          // );
+          console.log(
+            `📤 [userJoined Emitted] to socket ${socketId} (role=${client.user.role})`
+          );
         }
       }
 
-      // Emit online users update to all users in the room
-      // console.log(
-      //   `Checking sockets in room ${roomId}:`,
-      //   io.sockets.adapter.rooms.get(roomId)?.size || 0
-      // );
       for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
         const client = io.sockets.sockets.get(socketId);
         if (client) {
@@ -633,25 +616,18 @@ export const initializeSocket = (server, allowedOrigins) => {
               userCount: onlineUsers.length,
               roomId,
             });
-            // console.log(
-            //   `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
-            // );
           } else {
             client.emit("onlineUsersUpdate", {
               users: onlineUsers,
               roomId,
             });
-            // console.log(
-            //   `Emitted users to non-client socket ${socketId}: users=`,
-            //   onlineUsers
-            // );
           }
         }
       }
     });
 
     socket.on("leaveRoom", async (roomId) => {
-      console.log(`[DEBUG] leaveRoom event: userId=${userId}, roomId=${roomId}`);
+      // console.log(`[DEBUG] leaveRoom event: userId=${userId}, roomId=${roomId}`);
       await handleLeaveRoom(socket, roomId);
       const room = await roomCollection.findOne({ roomId });
       if (room) {
@@ -668,15 +644,6 @@ export const initializeSocket = (server, allowedOrigins) => {
       if (onlineUsersByRoom.has(roomId)) {
         onlineUsersByRoom.get(roomId).delete(userId);
         const onlineUsers = [...onlineUsersByRoom.get(roomId).values()];
-        // console.log(
-        //   `Online Users Update after leave: roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
-        // );
-
-        // Emit online users update to all users in the room
-        // console.log(
-        //   `Checking sockets in room ${roomId}:`,
-        //   io.sockets.adapter.rooms.get(roomId)?.size || 0
-        // );
         for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
           const client = io.sockets.sockets.get(socketId);
           if (client) {
@@ -685,18 +652,11 @@ export const initializeSocket = (server, allowedOrigins) => {
                 userCount: onlineUsers.length,
                 roomId,
               });
-              // console.log(
-              //   `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
-              // );
             } else {
               client.emit("onlineUsersUpdate", {
                 users: onlineUsers,
                 roomId,
               });
-              // console.log(
-              //   `Emitted users to non-client socket ${socketId}: users=`,
-              //   onlineUsers
-              // );
             }
           }
         }
@@ -704,27 +664,18 @@ export const initializeSocket = (server, allowedOrigins) => {
     });
 
     socket.on("deleteRoom", (data) => {
-      console.log(`[DEBUG] deleteRoom event: userId=${userId}, data=`, data);
+      // console.log(`[DEBUG] deleteRoom event: userId=${userId}, data=`, data);
       handleDeleteRoom(socket, data);
       onlineUsersByRoom.delete(data.roomId);
     });
 
     socket.on("disconnect", () => {
-      console.log(`[DEBUG] disconnect event: userId=${userId}, socketId=${socket.id}`);
+      // console.log(`[DEBUG] disconnect event: userId=${userId}, socketId=${socket.id}`);
       console.log(`❌ [Disconnected] ${userId}`);
       onlineUsersByRoom.forEach((users, roomId) => {
         if (users.has(userId)) {
           users.delete(userId);
           const onlineUsers = [...users.values()];
-          // console.log(
-          //   `Online Users Update after disconnect: roomId=${roomId}, userId=${userId}, role=${socket.user.role}, count=${onlineUsers.length}`
-          // );
-
-          // Emit online users update to all users in the room
-          // console.log(
-          //   `Checking sockets in room ${roomId}:`,
-          //   io.sockets.adapter.rooms.get(roomId)?.size || 0
-          // );
           for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
             const client = io.sockets.sockets.get(socketId);
             if (client) {
@@ -733,18 +684,11 @@ export const initializeSocket = (server, allowedOrigins) => {
                   userCount: onlineUsers.length,
                   roomId,
                 });
-                // console.log(
-                //   `Emitted userCount to client socket ${socketId}: userCount=${onlineUsers.length}`
-                // );
               } else {
                 client.emit("onlineUsersUpdate", {
                   users: onlineUsers,
                   roomId,
                 });
-                // console.log(
-                //   `Emitted users to non-client socket ${socketId}: users=`,
-                //   onlineUsers
-                // );
               }
             }
           }

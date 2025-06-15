@@ -23,6 +23,7 @@ const allowedOrigins = [
   "https://www.task-tracker.code4bharat.com",
   "https://www.task-tracker-admin.code4bharat.com",
   "https://www.task-tracker-superadmin.code4bharat.com",
+  "https://task-tracker-client.code4bharat.com"
 ]; // Match client origin
 
 // Middleware

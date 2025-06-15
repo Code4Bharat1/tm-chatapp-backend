@@ -76,7 +76,7 @@ export const initializeSocket = (server, allowedOrigins) => {
       }
 
       // Map position to role
-      let role = decoded.role || decoded.userRole || decoded.type || "Employee";
+      let role = decoded.position;
       const position = decoded.position?.toLowerCase();
       if (["employee", "manager", "hr"].includes(position)) {
         role = "user";
@@ -85,7 +85,7 @@ export const initializeSocket = (server, allowedOrigins) => {
       }
 
       // Validate role
-      if (!['user', 'admin', 'client'].includes(role)) {
+      if (!['user', 'admin', 'Client'].includes(role)) {
         console.error(`[Socket ${socket.id}] Invalid role in token payload: ${role}`);
         return next(new Error("Invalid role in token, authorization denied"));
       }
@@ -95,7 +95,7 @@ export const initializeSocket = (server, allowedOrigins) => {
       const collectionMap = {
         user: db.collection("users"),
         admin: db.collection("admins"),
-        client: db.collection("clients"),
+        Client: db.collection("clients"),
       };
 
       const collection = collectionMap[role];

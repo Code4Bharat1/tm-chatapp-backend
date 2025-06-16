@@ -236,7 +236,7 @@ export const getUsersByCompany = async (req, res) => {
     }
 
     // Return empty array for client role without error
-    if (req.user.role === "client") {
+    if (req.user.role === "Client") {
       return res.status(200).json({
         success: true,
         data: [],
@@ -258,7 +258,7 @@ export const getUsersByCompany = async (req, res) => {
       loggedInUserId = req.user.userId;
     } else if (req.user.role === "admin") {
       loggedInUserId = req.user.adminId;
-    } else if (req.user.role === "client") {
+    } else if (req.user.role === "Client") {
       loggedInUserId = req.user.clientId;
     }
 
@@ -291,7 +291,7 @@ export const getUsersByCompany = async (req, res) => {
     const allUsers = [
       ...usersFromUsers.map((user) => ({ ...user, role: "user" })),
       ...usersFromEmployees.map((user) => ({ ...user, role: "admin" })),
-      ...usersFromClients.map((user) => ({ ...user, role: "client" })),
+      ...usersFromClients.map((user) => ({ ...user, role: "Client" })),
     ]
       .filter((user) => String(user._id) !== String(loggedInUserId))
       .map((user) => ({
@@ -367,7 +367,7 @@ export const getMessagesByRoom = async (req, res) => {
           _id: new ObjectId(userId),
         });
         if (client) {
-          role = "client";
+          role = "Client";
         }
       }
     }
@@ -398,7 +398,7 @@ export const getMessagesByRoom = async (req, res) => {
       };
 
       // For clients: Use companyName for admin/user messages, username for client messages
-      if (role === "client") {
+      if (role === "Client") {
         message.username =
           msg.userId === userId ? msg.username : msg.companyName;
       }

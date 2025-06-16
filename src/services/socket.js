@@ -224,7 +224,7 @@ export const initializeSocket = (server, allowedOrigins) => {
           socket.emit("roomCreated", {
             roomId: room.roomId,
             roomName: room.roomName,
-            users: socket.user.role === "client" ? [] : room.users,
+            users: socket.user.role === "Client" ? [] : room.users,
             creator: room.creator,
           });
           console.log(`📤 [Room Emitted] ${room.roomId} for ${userId}`);
@@ -370,7 +370,7 @@ export const initializeSocket = (server, allowedOrigins) => {
           io.to(targetSocket.id).emit("roomCreated", {
             roomId,
             roomName,
-            users: targetSocket.user.role === "client" ? [] : allUserIds,
+            users: targetSocket.user.role === "Client" ? [] : allUserIds,
             creator: userId,
           });
           console.log(
@@ -439,7 +439,7 @@ export const initializeSocket = (server, allowedOrigins) => {
         const clientMessage = {
           ...baseMessage,
           username:
-            socket.user.role === "client"
+            socket.user.role === "Client"
               ? savedMessage.username
               : savedMessage.companyName,
         };
@@ -451,7 +451,7 @@ export const initializeSocket = (server, allowedOrigins) => {
           const client = io.sockets.sockets.get(socketId);
           if (client) {
             const messageToEmit =
-              client.user.role === "client" ? clientMessage : baseMessage;
+              client.user.role === "Client" ? clientMessage : baseMessage;
             client.emit("newMessage", messageToEmit);
             console.log(
               `Emitted newMessage to socket ${socketId} (role=${client.user.role}): username=${messageToEmit.username}`
@@ -526,7 +526,7 @@ export const initializeSocket = (server, allowedOrigins) => {
       for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
         if (socketId !== socket.id) {
           const client = io.sockets.sockets.get(socketId);
-          if (client && client.user.role !== "client") {
+          if (client && client.user.role !== "Client") {
             client.emit("userTyping", {
               userId: socket.user.userId,
               username: socket.user.firstName || "Anonymous",
@@ -591,14 +591,14 @@ export const initializeSocket = (server, allowedOrigins) => {
       socket.emit("joinConfirmation", {
         room: roomId,
         roomName: room.roomName,
-        users: socket.user.role === "client" ? [] : onlineUsers,
+        users: socket.user.role === "Client" ? [] : onlineUsers,
       });
 
       for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
         const client = io.sockets.sockets.get(socketId);
         if (
           client &&
-          client.user.role !== "client" &&
+          client.user.role !== "Client" &&
           client.user.userId !== userId
         ) {
           client.emit("userJoined", {
@@ -614,7 +614,7 @@ export const initializeSocket = (server, allowedOrigins) => {
       for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
         const client = io.sockets.sockets.get(socketId);
         if (client) {
-          if (client.user.role === "client") {
+          if (client.user.role === "Client") {
             client.emit("onlineUsersUpdate", {
               userCount: onlineUsers.length,
               roomId,
@@ -650,7 +650,7 @@ export const initializeSocket = (server, allowedOrigins) => {
         for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
           const client = io.sockets.sockets.get(socketId);
           if (client) {
-            if (client.user.role === "client") {
+            if (client.user.role === "Client") {
               client.emit("onlineUsersUpdate", {
                 userCount: onlineUsers.length,
                 roomId,
@@ -682,7 +682,7 @@ export const initializeSocket = (server, allowedOrigins) => {
           for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
             const client = io.sockets.sockets.get(socketId);
             if (client) {
-              if (client.user.role === "client") {
+              if (client.user.role === "Client") {
                 client.emit("onlineUsersUpdate", {
                   userCount: onlineUsers.length,
                   roomId,

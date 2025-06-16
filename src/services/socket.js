@@ -162,7 +162,7 @@ export const initializeSocket = (server, allowedOrigins) => {
 
       // Normalize IDs
       if (role === "admin") socket.user.adminId = idKey.toString();
-      if (role === "client") socket.user.clientId = idKey.toString();
+      if (role === "Client") socket.user.clientId = idKey.toString();
 
       console.log(
         `[Socket ${socket.id}] Authenticated: Role=${role}, ID=${idKey}, Position=${normalizedPosition}`
@@ -187,11 +187,12 @@ export const initializeSocket = (server, allowedOrigins) => {
     const companyCollection = db.collection("companies");
 
     let userId = null;
+    console.log("socket User : " , socket.user); 
     if (socket.user.role === "user") {
       userId = socket.user.userId;
     } else if (socket.user.role === "admin") {
       userId = socket.user.adminId;
-    } else if (socket.user.role === "client") {
+    } else if (socket.user.role === "Client") {
       userId = socket.user.clientId;
     } else {
       console.log("Null");

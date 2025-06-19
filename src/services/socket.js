@@ -37,13 +37,15 @@ export const initializeSocket = (server, allowedOrigins) => {
       // Check for Authorization header
       const authHeader = socket.handshake.headers.authorization;
       // console.log(`[Socket ${socket.id}] Authorization header:`, authHeader);
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        console.error(`[Socket ${socket.id}] No valid Authorization header found`);
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        console.error(
+          `[Socket ${socket.id}] No valid Authorization header found`
+        );
         return next(new Error("No token provided in Authorization header"));
       }
 
       // Extract token
-      const token = authHeader.split(' ')[1];
+      const token = authHeader.split(" ")[1];
 
       // console.log(token)
 
@@ -52,16 +54,21 @@ export const initializeSocket = (server, allowedOrigins) => {
       try {
         decoded = jwt.verify(token, process.env.JWT_SECRET);
       } catch (error) {
-        console.error(`[Socket ${socket.id}] Token verification error: ${error.message}`);
-        return next(new Error(
-          error.name === "TokenExpiredError"
-            ? "Token expired"
-            : "Invalid token"
-        ));
+        console.error(
+          `[Socket ${socket.id}] Token verification error: ${error.message}`
+        );
+        return next(
+          new Error(
+            error.name === "TokenExpiredError"
+              ? "Token expired"
+              : "Invalid token"
+          )
+        );
       }
 
       // Extract and validate ID
-      const idKey = decoded.id || decoded.userId || decoded.clientId || decoded.adminId;
+      const idKey =
+        decoded.id || decoded.userId || decoded.clientId || decoded.adminId;
       if (!idKey) {
         console.error(`[Socket ${socket.id}] Invalid token structure`, decoded);
         return next(new Error("Invalid token structure, ID not found"));
@@ -85,8 +92,10 @@ export const initializeSocket = (server, allowedOrigins) => {
       }
 
       // Validate role
-      if (!['user', 'admin', 'Client'].includes(role)) {
-        console.error(`[Socket ${socket.id}] Invalid role in token payload: ${role}`);
+      if (!["user", "admin", "Client"].includes(role)) {
+        console.error(
+          `[Socket ${socket.id}] Invalid role in token payload: ${role}`
+        );
         return next(new Error("Invalid role in token, authorization denied"));
       }
 
@@ -187,7 +196,7 @@ export const initializeSocket = (server, allowedOrigins) => {
     const companyCollection = db.collection("companies");
 
     let userId = null;
-    console.log("socket User : " , socket.user); 
+    console.log("socket User : ", socket.user);
     if (socket.user.role === "user") {
       userId = socket.user.userId;
     } else if (socket.user.role === "admin") {
@@ -208,11 +217,16 @@ export const initializeSocket = (server, allowedOrigins) => {
       .find({ users: userId })
       .toArray()
       .then((userRooms) => {
-        console.log(`[DEBUG] Fetched rooms for user ${userId}:`, userRooms.map(r => ({ roomId: r.roomId, roomName: r.roomName })));
+        console.log(
+          `[DEBUG] Fetched rooms for user ${userId}:`,
+          userRooms.map((r) => ({ roomId: r.roomId, roomName: r.roomName }))
+        );
         userRooms.forEach((room) => {
           // Skip rooms that resemble a default company chat
           if (room.roomName === `Company ${companyId} Chat`) {
-            console.warn(`[Socket ${socket.id}] Skipping default room: ${room.roomName}`);
+            console.warn(
+              `[Socket ${socket.id}] Skipping default room: ${room.roomName}`
+            );
             return;
           }
           rooms.set(room.roomId, {
@@ -238,7 +252,9 @@ export const initializeSocket = (server, allowedOrigins) => {
     function getActiveRoom() {
       const userRooms = [...socket.rooms].filter((r) => r.startsWith("room_"));
       if (userRooms.length === 0) {
-        console.warn(`[Socket ${socket.id}] No active rooms found for user ${userId}`);
+        console.warn(
+          `[Socket ${socket.id}] No active rooms found for user ${userId}`
+        );
         return null;
       }
       return userRooms[0];
@@ -306,6 +322,75 @@ export const initializeSocket = (server, allowedOrigins) => {
       return validUserIds;
     }
 
+    async function validatePlanForRoomCreation(companyId, userIds) {
+      const db = getDB();
+      const companyCollection = db.collection("companyregistrations");
+
+      try {
+        // Fetch company plan information
+        const company = await companyCollection.findOne(
+          { _id: new ObjectId(companyId) },
+          { projection: { planPreferences: 1 } }
+        );
+
+        if (!company || !company.planPreferences) {
+          console.error(`Company plan not found for companyId: ${companyId}`);
+          return {
+            allowed: false,
+            error: "Company plan information not found.",
+          };
+        }
+
+        const plan = company.planPreferences.desiredPlan?.toLowerCase();
+        // const status = company.status?.toLowerCase();
+
+        // // Check if plan is active
+        // if (status !== "active") {
+        //   return {
+        //     allowed: false,
+        //     error:
+        //       "Your company plan is not active. Please contact your administrator.",
+        //   };
+        // }
+
+        // Validate based on plan type
+        switch (plan) {
+          case "basic":
+            return {
+              allowed: false,
+              error:
+                "Chat feature is not available with Basic plan. Please upgrade to Standard or Prime plan.",
+            };
+
+          case "standard":
+            if (userIds.length > 1) {
+              return {
+                allowed: false,
+                error:
+                  "Standard plan allows rooms with only one user. Upgrade to Prime plan for multi-user rooms.",
+              };
+            }
+            return { allowed: true };
+
+          case "prime":
+            // Prime plan allows unlimited users
+            return { allowed: true };
+
+          default:
+            return {
+              allowed: false,
+              error: "Invalid plan type. Please contact your administrator.",
+            };
+        }
+      } catch (error) {
+        console.error("Error validating plan for room creation:", error);
+        return {
+          allowed: false,
+          error: "Error validating plan permissions.",
+        };
+      }
+    }
+
     socket.on("createRoom", async ({ roomName, userIds }) => {
       // console.log(`[DEBUG] createRoom event: userId=${userId}, roomName=${roomName}, userIds=`, userIds);
       if (
@@ -319,8 +404,25 @@ export const initializeSocket = (server, allowedOrigins) => {
 
       // Prevent creation of rooms with default company chat name
       if (roomName.trim() === `Company ${companyId} Chat`) {
-        console.error(`[Socket ${socket.id}] Attempt to create restricted room name: ${roomName}`);
-        return socket.emit("errorMessage", "Room name is reserved and cannot be used.");
+        console.error(
+          `[Socket ${socket.id}] Attempt to create restricted room name: ${roomName}`
+        );
+        return socket.emit(
+          "errorMessage",
+          "Room name is reserved and cannot be used."
+        );
+      }
+
+      // NEW: Validate plan permissions for room creation
+      const planValidation = await validatePlanForRoomCreation(
+        companyId,
+        userIds
+      );
+      if (!planValidation.allowed) {
+        console.error(
+          `[Socket ${socket.id}] Plan validation failed for companyId: ${companyId}, error: ${planValidation.error}`
+        );
+        return socket.emit("errorMessage", planValidation.error);
       }
 
       const validUserIds = await validateCompanyUsers(userIds);
@@ -421,7 +523,11 @@ export const initializeSocket = (server, allowedOrigins) => {
       }
 
       try {
-        const savedMessage = await handleSendMessage(socket, message, currentRoom);
+        const savedMessage = await handleSendMessage(
+          socket,
+          message,
+          currentRoom
+        );
         if (!savedMessage) {
           throw new Error("handleSendMessage returned no message");
         }
@@ -447,7 +553,8 @@ export const initializeSocket = (server, allowedOrigins) => {
         console.log(
           `Emitting newMessage for roomId=${currentRoom}, sender userId=${userId}, role=${socket.user.role}`
         );
-        for (const socketId of io.sockets.adapter.rooms.get(currentRoom) || []) {
+        for (const socketId of io.sockets.adapter.rooms.get(currentRoom) ||
+          []) {
           const client = io.sockets.sockets.get(socketId);
           if (client) {
             const messageToEmit =

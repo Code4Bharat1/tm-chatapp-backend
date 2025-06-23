@@ -359,7 +359,7 @@ export const initializeSocket = (server, allowedOrigins) => {
             return {
               allowed: false,
               error:
-                "Chat feature is not available with Basic plan. Please upgrade to Standard or Prime plan.",
+                "Chat feature is not available with Basic plan. Please upgrade to Standard or Premium plan.",
             };
 
           case "standard":
@@ -367,13 +367,13 @@ export const initializeSocket = (server, allowedOrigins) => {
               return {
                 allowed: false,
                 error:
-                  "Standard plan allows rooms with only one user. Upgrade to Prime plan for multi-user rooms.",
+                  "Standard plan allows rooms with only one user. Upgrade to Premium plan for multi-user rooms.",
               };
             }
             return { allowed: true };
 
-          case "prime":
-            // Prime plan allows unlimited users
+          case "Premium":
+            // Premium plan allows unlimited users
             return { allowed: true };
 
           default:

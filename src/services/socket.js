@@ -354,6 +354,7 @@ export const initializeSocket = (server, allowedOrigins) => {
         // }
 
         // Validate based on plan type
+        console.log(plan)
         switch (plan) {
           case "basic":
             return {
@@ -372,7 +373,7 @@ export const initializeSocket = (server, allowedOrigins) => {
             }
             return { allowed: true };
 
-          case "Premium":
+          case "premium":
             // Premium plan allows unlimited users
             return { allowed: true };
 
